@@ -1,0 +1,151 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ClipNest 采集助手</title>
+    <style>
+      :root {
+        --bg: #f6f8fb;
+        --card: rgba(255, 255, 255, 0.92);
+        --border: rgba(15, 23, 42, 0.12);
+        --text: #0f172a;
+        --muted: rgba(15, 23, 42, 0.62);
+        --accent: #3b82f6;
+        --accent-soft: rgba(59, 130, 246, 0.12);
+      }
+      body {
+        margin: 0;
+        background:
+          radial-gradient(420px 280px at 8% 0%, rgba(59, 130, 246, 0.16), transparent 60%),
+          radial-gradient(360px 240px at 90% 10%, rgba(14, 165, 233, 0.12), transparent 60%),
+          linear-gradient(180deg, #f6f8fb, #eef3fb);
+        color: var(--text);
+        font: 13px/1.4 "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+        width: 360px;
+      }
+      .wrap {
+        padding: 12px;
+        display: grid;
+        gap: 10px;
+      }
+      .card {
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 14px;
+        padding: 10px;
+        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+      }
+      .title {
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin-bottom: 6px;
+      }
+      .status {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .sub {
+        margin-top: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .split {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      button {
+        width: 100%;
+        cursor: pointer;
+        border-radius: 12px;
+        border: 1px solid rgba(15, 23, 42, 0.14);
+        background: #fff;
+        color: var(--text);
+        padding: 9px 10px;
+        font-weight: 600;
+        transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+      }
+      button:hover {
+        border-color: rgba(59, 130, 246, 0.4);
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+        transform: translateY(-1px);
+      }
+      .btn-primary {
+        border-color: rgba(59, 130, 246, 0.55);
+        background: linear-gradient(135deg, #ffffff, rgba(59, 130, 246, 0.12));
+      }
+      .btn-ghost {
+        background: rgba(255, 255, 255, 0.76);
+      }
+      .small {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      code {
+        color: var(--accent);
+      }
+      .grid {
+        display: grid;
+        gap: 8px;
+      }
+      .chips {
+        display: flex;
+        gap: 6px;
+        margin-top: 8px;
+        flex-wrap: wrap;
+      }
+      .chip {
+        padding: 4px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(15, 23, 42, 0.12);
+        background: var(--accent-soft);
+        font-size: 11px;
+        color: #0f172a;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <div class="title">ClipNest 采集助手</div>
+        <div class="status">
+          服务：<code id="serverUrl"></code>
+          <span id="serverStatus"></span>
+        </div>
+        <div class="sub">支持 X / Pixiv / 堆糖。浏览器已登录即可采集。</div>
+        <div class="chips">
+          <span class="chip">X</span>
+          <span class="chip">Pixiv</span>
+          <span class="chip">堆糖</span>
+        </div>
+      </div>
+
+      <div class="card grid">
+        <button class="btn-primary" id="btnSavePage">保存当前页媒体</button>
+        <button id="btnAddTarget">加入当前页到自动目标</button>
+        <div class="split">
+          <button id="btnAutoStart">开始自动采集</button>
+          <button class="btn-ghost" id="btnAutoStop">停止</button>
+        </div>
+        <div class="split">
+          <button class="btn-ghost" id="btnOptions">设置</button>
+          <button class="btn-ghost" id="btnOpenLibrary">打开图库</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="title">最近结果</div>
+        <div class="small" id="lastResult">暂无操作。</div>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

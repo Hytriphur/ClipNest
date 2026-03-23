@@ -1,0 +1,43 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+apps/**/dist/
+apps/**/build/
+apps/**/.vite/
+apps/**/.cache/
+
+# logs
+*.log
+logs/
+
+# local env
+.env
+.env.*
+!.env.example
+
+# app runtime data (do not commit)
+.x-image-collector/
+data/
+tmp/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+
+# OS / editor
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# test / coverage
+coverage/
+*.lcov

@@ -1,0 +1,128 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ClipNest 采集助手设置</title>
+    <style>
+      :root {
+        --bg0: #f6f8fb;
+        --bg1: #eef3fb;
+        --card: rgba(255, 255, 255, 0.94);
+        --border: rgba(15, 23, 42, 0.12);
+        --text: #0f172a;
+        --muted: rgba(15, 23, 42, 0.62);
+        --accent: #3b82f6;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(1000px 560px at 15% 0%, rgba(59, 130, 246, 0.14), transparent 60%),
+          radial-gradient(900px 520px at 80% 15%, rgba(14, 165, 233, 0.1), transparent 60%),
+          linear-gradient(180deg, var(--bg0), var(--bg1));
+        color: var(--text);
+        font: 14px/1.45 "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      }
+      .wrap {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 18px;
+        display: grid;
+        gap: 14px;
+      }
+      .card {
+        border: 1px solid var(--border);
+        background: var(--card);
+        border-radius: 16px;
+        padding: 14px;
+        box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+      }
+      h1 {
+        margin: 0;
+        font-size: 18px;
+        letter-spacing: -0.02em;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 10px;
+        align-items: center;
+        margin-top: 10px;
+      }
+      input, textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.9);
+        color: var(--text);
+        outline: none;
+      }
+      input:focus, textarea:focus {
+        border-color: rgba(59, 130, 246, 0.55);
+        box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.12);
+      }
+      button {
+        cursor: pointer;
+        border-radius: 12px;
+        border: 1px solid rgba(15, 23, 42, 0.14);
+        background: #fff;
+        color: var(--text);
+        padding: 10px 12px;
+        font-weight: 700;
+        transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+      }
+      button:hover {
+        border-color: rgba(59, 130, 246, 0.35);
+        box-shadow: 0 12px 26px rgba(15, 23, 42, 0.12);
+        transform: translateY(-1px);
+      }
+      .muted { color: var(--muted); font-size: 12px; }
+      code { color: var(--accent); }
+      .targets { display: grid; gap: 8px; margin-top: 10px; }
+      .targetRow { display: grid; grid-template-columns: 1fr 120px; gap: 8px; }
+      .actions { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>ClipNest 采集助手设置</h1>
+        <div class="muted">采集只在已登录的浏览器内进行，不保存任何账号凭据。</div>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <div>本地服务地址</div>
+          <input id="serverUrl" placeholder="http://localhost:5174" />
+        </div>
+        <div class="row">
+          <div>最大滚动次数</div>
+          <input id="maxScrolls" type="number" min="1" step="1" />
+        </div>
+        <div class="row">
+          <div>滚动间隔（毫秒）</div>
+          <input id="stepDelayMs" type="number" min="250" step="50" />
+        </div>
+        <div class="row">
+          <div></div>
+          <button id="btnSaveSettings">保存设置</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="font-weight: 800; letter-spacing: -0.01em;">自动采集目标</div>
+        <div class="muted">每行一个 URL，例如：<code>https://x.com/someone/media</code> 或 Pixiv 作品页。</div>
+        <textarea id="targets" rows="8" placeholder="https://x.com/..."></textarea>
+        <div class="actions">
+          <button id="btnSaveTargets">保存目标</button>
+          <button id="btnOpenLibrary">打开图库</button>
+        </div>
+        <div class="muted" id="saveHint"></div>
+      </div>
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

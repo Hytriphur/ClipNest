@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "ClipNest Collector",
+  "version": "0.1.0",
+  "description": "ClipNest local-first media collector for X / Pixiv / Duitang.",
+  "action": {
+    "default_title": "ClipNest",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "permissions": ["storage", "tabs", "scripting", "activeTab", "webRequest"],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "https://video.twimg.com/*",
+    "https://www.pixiv.net/*",
+    "https://pixiv.net/*",
+    "https://*.pixiv.net/*",
+    "https://*.pximg.net/*",
+    "https://*.duitang.com/*",
+    "http://localhost:*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*",
+        "https://www.pixiv.net/*",
+        "https://pixiv.net/*",
+        "https://*.duitang.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

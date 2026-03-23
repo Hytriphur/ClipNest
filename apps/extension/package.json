@@ -1,0 +1,21 @@
+{
+  "name": "@clipnest/extension",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ./tools/build.mjs",
+    "dev": "node ./tools/build.mjs --watch",
+    "test": "vitest run",
+    "lint": "node -e \"process.exit(0)\""
+  },
+  "dependencies": {
+    "p-limit": "^6.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "esbuild": "^0.25.9",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
