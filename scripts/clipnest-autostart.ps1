@@ -1,37 +1,48 @@
-$ErrorActionPreference = "Stop"
-
-# ClipNest autostart task for current user (Windows Task Scheduler)
+# ClipNest server-only autostart installer (Windows, silent)
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clipnest-autostart.ps1
 
-$RepoRoot = "G:\\projects\\x-image-collector"
-$TaskName = "ClipNest Server"
-$Proxy = "http://127.0.0.1:7890" # set to "off" to disable proxy
-$LogLevel = "info"
-$Port = "5174"
+param(
+  [string]$TaskName = "ClipNest Server",
+  [string]$Proxy = "http://127.0.0.1:7890",
+  [string]$LogLevel = "info",
+  [int]$Port = 5174
+)
 
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$ScriptPath = Join-Path $RepoRoot "scripts\\clipnest-run-server.ps1"
 $ServerEntry = Join-Path $RepoRoot "apps\\server\\dist\\index.js"
+if (!(Test-Path $ScriptPath)) {
+  throw "Missing script: $ScriptPath"
+}
 if (!(Test-Path $ServerEntry)) {
-  Write-Host "Cannot find server build: $ServerEntry"
-  Write-Host "Run: npm run build -w apps/server"
-  exit 1
+  throw "Server build missing. Run: npm run build -w apps/server"
 }
 
-Write-Host "Creating scheduled task '$TaskName' (Run at logon for current user)..."
-
-$EnvProxyPart = ""
-if ($Proxy -and $Proxy.Trim().Length -gt 0) {
-  $EnvProxyPart = "set XIC_PROXY=$Proxy && "
+$startupDir = [Environment]::GetFolderPath("Startup")
+$legacy = Join-Path $startupDir "ClipNest Startup.cmd"
+if (Test-Path $legacy) {
+  Remove-Item -LiteralPath $legacy -Force
+  Write-Host "Removed legacy startup entry: $legacy"
 }
 
-$Cmd = "cd /d `"$RepoRoot`" && set XIC_LOG_LEVEL=$LogLevel && set PORT=$Port && $EnvProxyPart node apps\\server\\dist\\index.js"
-$Cmd = $Cmd -replace "\s+$", ""
+$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($existing) {
+  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+}
 
-schtasks /Create /F /SC ONLOGON /RL LIMITED /TN "$TaskName" /TR "cmd.exe /c $Cmd" | Out-Null
+$userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$args = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`" -RepoRoot `"$RepoRoot`" -Proxy `"$Proxy`" -LogLevel `"$LogLevel`" -Port $Port"
 
-Write-Host "Done. You can verify with:"
-Write-Host "  schtasks /Query /TN `"$TaskName`""
-Write-Host "Start immediately with:"
-Write-Host "  schtasks /Run /TN `"$TaskName`""
-Write-Host "Delete with:"
-Write-Host "  schtasks /Delete /TN `"$TaskName`" /F"
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $args
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::FromDays(3650))
+
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "ClipNest server background task" -Force | Out-Null
+Start-ScheduledTask -TaskName $TaskName
+
+Write-Host "Installed and started task: $TaskName"
+Write-Host "Verify: http://localhost:$Port/api/health"

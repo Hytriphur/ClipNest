@@ -5,11 +5,13 @@ export type MediaCandidate = {
   element: Element;
   mediaUrl: string;
   mediaType: 'image' | 'video';
+  sourcePageUrl?: string;
 };
 
 export function detectSite(locHref: string): SiteId {
   try {
-    const host = new URL(locHref).hostname.toLowerCase();
+    const url = new URL(locHref);
+    const host = url.hostname.toLowerCase();
     if (host === 'x.com' || host.endsWith('.x.com') || host === 'twitter.com' || host.endsWith('.twitter.com')) {
       return 'x';
     }
@@ -19,10 +21,110 @@ export function detectSite(locHref: string): SiteId {
     if (host === 'duitang.com' || host.endsWith('.duitang.com')) {
       return 'duitang';
     }
+    if (
+      host === 'xiaohongshu.com' ||
+      host.endsWith('.xiaohongshu.com') ||
+      host === 'rednote.com' ||
+      host.endsWith('.rednote.com') ||
+      host.endsWith('.xhscdn.com')
+    ) {
+      return 'xiaohongshu';
+    }
+    if (host === 'image.baidu.com' || host.endsWith('.image.baidu.com')) {
+      return 'baidu';
+    }
+    if (
+      host === 'images.google.com' ||
+      ((host === 'www.google.com' || host.endsWith('.google.com')) &&
+        (url.pathname.startsWith('/search') && url.searchParams.get('tbm') === 'isch'))
+    ) {
+      return 'google';
+    }
   } catch {
     // ignore
   }
   return 'other';
+}
+
+function hasMediaExtension(url: string): boolean {
+  try {
+    const pathname = new URL(url.startsWith('//') ? `https:${url}` : url).pathname.toLowerCase();
+    return /\.(?:jpg|jpeg|png|webp|gif|bmp|avif|svg|mp4|webm|mov|m4v)(?:$|[?#])/i.test(pathname);
+  } catch {
+    return /\.(?:jpg|jpeg|png|webp|gif|bmp|avif|svg|mp4|webm|mov|m4v)(?:$|[?#])/i.test(url);
+  }
+}
+
+function tryAbsoluteUrl(rawUrl?: string | null, base?: string): string | undefined {
+  if (!rawUrl) return undefined;
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return undefined;
+  try {
+    return new URL(trimmed, base).toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function getQueryParamUrl(rawHref: string, locHref: string, names: string[]): string | undefined {
+  try {
+    const url = new URL(rawHref, locHref);
+    for (const name of names) {
+      const value = url.searchParams.get(name);
+      const resolved = tryAbsoluteUrl(value, locHref);
+      if (resolved) return resolved;
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
+
+function getClosestAnchor(el: Element): HTMLAnchorElement | null {
+  return el.closest('a[href]') as HTMLAnchorElement | null;
+}
+
+function resolveGoogleImageFromAnchor(el: Element, locHref: string) {
+  const anchor = getClosestAnchor(el);
+  const href = anchor?.getAttribute('href') ?? '';
+  if (!href.includes('/imgres') && !href.includes('imgurl=')) return undefined;
+  const mediaUrl = getQueryParamUrl(href, locHref, ['imgurl', 'mediaurl', 'url']);
+  if (!mediaUrl) return undefined;
+  return {
+    mediaUrl,
+    sourcePageUrl: getQueryParamUrl(href, locHref, ['imgrefurl', 'refurl']),
+  };
+}
+
+function resolveBaiduImageFromAnchor(el: Element, locHref: string) {
+  const anchor = getClosestAnchor(el);
+  const href = anchor?.getAttribute('href') ?? '';
+  if (!/objurl=|imgurl=|fromurl=|image\/detail|search\/detail/i.test(href)) return undefined;
+  const mediaUrl = getQueryParamUrl(href, locHref, ['objurl', 'imgurl', 'original', 'image_url']);
+  if (!mediaUrl) return undefined;
+  return {
+    mediaUrl,
+    sourcePageUrl: getQueryParamUrl(href, locHref, ['fromurl', 'source', 'refer']),
+  };
+}
+
+function resolveXiaohongshuSourcePageUrl(el: Element, locHref: string): string | undefined {
+  const anchor = getClosestAnchor(el);
+  const href = anchor?.getAttribute('href') ?? '';
+  if (!href) return undefined;
+  try {
+    const url = new URL(href, locHref);
+    if (
+      /\/explore\/[a-z0-9]+/i.test(url.pathname) ||
+      /\/discovery\/item\/[a-z0-9]+/i.test(url.pathname) ||
+      /\/item\/[a-z0-9]+/i.test(url.pathname)
+    ) {
+      return url.toString();
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
 }
 
 function extractPixivArtworkIdFromText(text: string): string | undefined {
@@ -229,6 +331,20 @@ function isLikelyMediaUrl(url: string, site: SiteId): boolean {
     if (!/duitang\.com/.test(url)) return false;
     return true;
   }
+  if (site === 'xiaohongshu') {
+    try {
+      const u = new URL(url);
+      const host = u.hostname.toLowerCase();
+      if (host.endsWith('.xhscdn.com')) return true;
+      if ((host.endsWith('.xiaohongshu.com') || host.endsWith('.rednote.com')) && hasMediaExtension(url)) return true;
+      return hasMediaExtension(url);
+    } catch {
+      return hasMediaExtension(url);
+    }
+  }
+  if (site === 'google' || site === 'baidu') {
+    return hasMediaExtension(url);
+  }
   return false;
 }
 
@@ -251,6 +367,16 @@ function isNoiseAsset(url: string, site: SiteId): boolean {
   if (site === 'duitang') {
     if (/\/avatar\//.test(url)) return true;
     if (/\/icon\//.test(url)) return true;
+  }
+  if (site === 'xiaohongshu') {
+    if (/avatar|profile|icon|emoji|logo|badge|captcha/i.test(url)) return true;
+  }
+  if (site === 'google') {
+    if (/googlelogo|favicon|sprite|logo/i.test(url)) return true;
+    if (/gstatic\.com\/images/i.test(url)) return true;
+  }
+  if (site === 'baidu') {
+    if (/avatar|profile|icon|logo|passport|captcha/i.test(url)) return true;
   }
   return false;
 }
@@ -307,18 +433,167 @@ function parsePixivMeta(doc: Document, locHref: string): { authorHandle?: string
   };
 }
 
-function findClosestTweetUrl(el: Element, pageOrigin: string): string | undefined {
-  const article = el.closest('article');
-  if (!article) return undefined;
+function parseXiaohongshuMeta(doc: Document): { authorHandle?: string; tags?: string[] } {
+  const author =
+    doc.querySelector<HTMLMetaElement>('meta[name="author"]')?.content ??
+    doc.querySelector<HTMLMetaElement>('meta[property="og:article:author"]')?.content ??
+    doc.querySelector<HTMLMetaElement>('meta[name="twitter:creator"]')?.content ??
+    '';
 
-  const a = article.querySelector<HTMLAnchorElement>('a[href*="/status/"]');
-  const href = a?.getAttribute('href');
-  if (!href) return undefined;
+  const keywords =
+    doc.querySelector<HTMLMetaElement>('meta[name="keywords"]')?.content ??
+    doc.querySelector<HTMLMetaElement>('meta[property="og:keywords"]')?.content ??
+    '';
+
+  const filteredTags = keywords
+    .split(/[,\uff0c#\s]+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .filter((tag) => !/^(小红书|rednote|xiaohongshu|精选|推荐)$/i.test(tag));
+
+  return {
+    authorHandle: author.trim().replace(/^@/, '') || undefined,
+    tags: Array.from(new Set(filteredTags)).slice(0, 24),
+  };
+}
+
+function collectXiaohongshuMetaMedia(doc: Document): Array<{ mediaUrl: string; mediaType: 'image' | 'video' }> {
+  const urls: Array<{ mediaUrl: string; mediaType: 'image' | 'video' }> = [];
+  const push = (selector: string, mediaType: 'image' | 'video') => {
+    const value = doc.querySelector<HTMLMetaElement>(selector)?.content;
+    const resolved = tryAbsoluteUrl(value, doc.location?.href);
+    if (!resolved) return;
+    if (!isLikelyMediaUrl(resolved, 'xiaohongshu') || isNoiseAsset(resolved, 'xiaohongshu')) return;
+    urls.push({ mediaUrl: resolved, mediaType });
+  };
+  push('meta[property="og:image"]', 'image');
+  push('meta[name="twitter:image"]', 'image');
+  push('meta[property="og:video"]', 'video');
+  push('meta[name="twitter:player:stream"]', 'video');
+  return urls;
+}
+
+function isXTweetStatusHref(href: string): boolean {
+  return /\/(?:i\/)?status\/\d+/i.test(href);
+}
+
+function rectArea(rect: DOMRect | ClientRect): number {
+  return Math.max(0, rect.width) * Math.max(0, rect.height);
+}
+
+function rectIntersectionArea(a: DOMRect | ClientRect, b: DOMRect | ClientRect): number {
+  const left = Math.max(a.left, b.left);
+  const right = Math.min(a.right, b.right);
+  const top = Math.max(a.top, b.top);
+  const bottom = Math.min(a.bottom, b.bottom);
+  const width = Math.max(0, right - left);
+  const height = Math.max(0, bottom - top);
+  return width * height;
+}
+
+function rectCenterDistance(a: DOMRect | ClientRect, b: DOMRect | ClientRect): number {
+  const ax = a.left + a.width / 2;
+  const ay = a.top + a.height / 2;
+  const bx = b.left + b.width / 2;
+  const by = b.top + b.height / 2;
+  return Math.hypot(ax - bx, ay - by);
+}
+
+function getDomDistance(a: Element, b: Element, stop: Element): number {
+  if (a === b) return 0;
+  const distA = new Map<Element, number>();
+  let cur: Element | null = a;
+  let depth = 0;
+  while (cur) {
+    distA.set(cur, depth);
+    if (cur === stop) break;
+    cur = cur.parentElement;
+    depth += 1;
+  }
+  cur = b;
+  depth = 0;
+  while (cur) {
+    const existing = distA.get(cur);
+    if (existing !== undefined) return existing + depth;
+    if (cur === stop) break;
+    cur = cur.parentElement;
+    depth += 1;
+  }
+  return 999;
+}
+
+function normalizeXTweetHref(href: string, pageOrigin: string): string | undefined {
   try {
-    return new URL(href, pageOrigin).toString();
+    const url = new URL(href, pageOrigin);
+    if (!isXTweetStatusHref(url.pathname)) return undefined;
+    url.hash = '';
+    return url.toString();
   } catch {
     return undefined;
   }
+}
+
+export function findClosestTweetUrl(el: Element, pageOrigin: string): string | undefined {
+  const article = el.closest('article');
+  if (!article) return undefined;
+
+  const targetRect = el.getBoundingClientRect();
+  const targetMediaRoot =
+    el.closest('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], a[href*="/status/"], a[href*="/i/status/"]') ??
+    el;
+  const targetIsVideo = !!(el.closest('[data-testid="videoPlayer"]') || el.tagName === 'VIDEO');
+
+  const anchors = Array.from(article.querySelectorAll<HTMLAnchorElement>('a[href]')).filter((anchor) => {
+    if (anchor.closest('article') !== article) return false;
+    const href = anchor.getAttribute('href') ?? '';
+    return isXTweetStatusHref(href);
+  });
+
+  let bestUrl: string | undefined;
+  let bestScore = -Infinity;
+
+  for (const anchor of anchors) {
+    const rawHref = anchor.getAttribute('href') ?? '';
+    const normalized = normalizeXTweetHref(rawHref, pageOrigin);
+    if (!normalized) continue;
+
+    let score = 0;
+    const anchorRect = anchor.getBoundingClientRect();
+    const overlap = rectIntersectionArea(targetRect, anchorRect);
+    const overlapRatio =
+      overlap > 0 ? overlap / Math.max(1, Math.min(rectArea(targetRect), Math.max(1, rectArea(anchorRect)))) : 0;
+    const distance = rectCenterDistance(targetRect, anchorRect);
+    const domDistance = getDomDistance(anchor, el, article);
+    const href = rawHref;
+    const isVideoRoute = /\/video\/\d+$/i.test(href);
+    const isPhotoRoute = /\/photo\/\d+$/i.test(href);
+    const isBaseStatus = /\/(?:i\/)?status\/\d+\/?$/i.test(href);
+
+    if (anchor === el) score += 4000;
+    if (anchor.contains(el)) score += 3600;
+    if (el.contains(anchor)) score += 3200;
+    if (targetMediaRoot && anchor.closest('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], a[href*="/status/"], a[href*="/i/status/"]') === targetMediaRoot) {
+      score += 2800;
+    }
+    if (overlap > 0) {
+      score += 1800 + overlapRatio * 2200;
+    } else {
+      score += Math.max(0, 1200 - distance);
+    }
+    score += Math.max(0, 900 - domDistance * 90);
+
+    if (targetIsVideo && isVideoRoute) score += 2200;
+    if (!targetIsVideo && isPhotoRoute) score += 1600;
+    if (anchor.querySelector('time')) score += 260;
+    if (isBaseStatus) score += 180;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestUrl = normalized;
+    }
+  }
+
+  return bestUrl;
 }
 
 function extractHandleFromTweetUrl(tweetUrl?: string): string | undefined {
@@ -358,7 +633,8 @@ function buildItemsFromCandidates(
     const authorHandle =
       site === 'x' ? extractHandleFromTweetUrl(tweetUrl) : extra?.authorHandle ? extra.authorHandle : undefined;
     const artworkUrl = site === 'pixiv' ? resolvePixivArtworkUrl(candidate.element, locHref) : undefined;
-    const effectiveSourcePageUrl = site === 'pixiv' && artworkUrl ? artworkUrl : sourcePageUrl;
+    const effectiveSourcePageUrl =
+      candidate.sourcePageUrl ?? (site === 'pixiv' && artworkUrl ? artworkUrl : sourcePageUrl);
     const referer = site === 'pixiv' && artworkUrl ? artworkUrl : sourcePageUrl;
 
     items.push({
@@ -441,9 +717,38 @@ function pickBestUrl(urls: string[], site: SiteId): string | null {
 }
 
 function candidateFromImage(img: HTMLImageElement, site: SiteId): MediaCandidate | null {
+  if (site === 'google') {
+    const resolved = resolveGoogleImageFromAnchor(img, img.ownerDocument?.location?.href ?? '');
+    if (resolved?.mediaUrl) {
+      return {
+        element: img,
+        mediaUrl: normalizeMediaUrl(resolved.mediaUrl),
+        mediaType: 'image',
+        sourcePageUrl: resolved.sourcePageUrl,
+      };
+    }
+  }
+
+  if (site === 'baidu') {
+    const resolved = resolveBaiduImageFromAnchor(img, img.ownerDocument?.location?.href ?? '');
+    if (resolved?.mediaUrl) {
+      return {
+        element: img,
+        mediaUrl: normalizeMediaUrl(resolved.mediaUrl),
+        mediaType: 'image',
+        sourcePageUrl: resolved.sourcePageUrl,
+      };
+    }
+  }
+
   const rawUrl = pickBestUrl(collectImageUrls(img), site);
   if (!rawUrl) return null;
-  return { element: img, mediaUrl: normalizeMediaUrl(rawUrl), mediaType: 'image' };
+  return {
+    element: img,
+    mediaUrl: normalizeMediaUrl(rawUrl),
+    mediaType: 'image',
+    sourcePageUrl: site === 'xiaohongshu' ? resolveXiaohongshuSourcePageUrl(img, img.ownerDocument?.location?.href ?? '') : undefined,
+  };
 }
 
 function pickVideoUrl(video: HTMLVideoElement, site: SiteId): string | null {
@@ -463,7 +768,13 @@ function pickVideoUrl(video: HTMLVideoElement, site: SiteId): string | null {
 function candidateFromVideo(video: HTMLVideoElement, site: SiteId): MediaCandidate | null {
   const rawUrl = pickVideoUrl(video, site);
   if (!rawUrl) return null;
-  return { element: video, mediaUrl: normalizeMediaUrl(rawUrl), mediaType: 'video' };
+  return {
+    element: video,
+    mediaUrl: normalizeMediaUrl(rawUrl),
+    mediaType: 'video',
+    sourcePageUrl:
+      site === 'xiaohongshu' ? resolveXiaohongshuSourcePageUrl(video, video.ownerDocument?.location?.href ?? '') : undefined,
+  };
 }
 
 function candidateFromElement(el: Element, site: SiteId): MediaCandidate | null {
@@ -514,9 +825,38 @@ function collectBackgroundUrls(el: HTMLElement): string[] {
 }
 
 function candidateFromBackground(el: HTMLElement, site: SiteId): MediaCandidate | null {
+  if (site === 'google') {
+    const resolved = resolveGoogleImageFromAnchor(el, el.ownerDocument?.location?.href ?? '');
+    if (resolved?.mediaUrl) {
+      return {
+        element: el,
+        mediaUrl: normalizeMediaUrl(resolved.mediaUrl),
+        mediaType: 'image',
+        sourcePageUrl: resolved.sourcePageUrl,
+      };
+    }
+  }
+
+  if (site === 'baidu') {
+    const resolved = resolveBaiduImageFromAnchor(el, el.ownerDocument?.location?.href ?? '');
+    if (resolved?.mediaUrl) {
+      return {
+        element: el,
+        mediaUrl: normalizeMediaUrl(resolved.mediaUrl),
+        mediaType: 'image',
+        sourcePageUrl: resolved.sourcePageUrl,
+      };
+    }
+  }
+
   const rawUrl = pickBestUrl(collectBackgroundUrls(el), site);
   if (!rawUrl) return null;
-  return { element: el, mediaUrl: normalizeMediaUrl(rawUrl), mediaType: 'image' };
+  return {
+    element: el,
+    mediaUrl: normalizeMediaUrl(rawUrl),
+    mediaType: 'image',
+    sourcePageUrl: site === 'xiaohongshu' ? resolveXiaohongshuSourcePageUrl(el, el.ownerDocument?.location?.href ?? '') : undefined,
+  };
 }
 
 export function findMediaCandidates(
@@ -557,6 +897,18 @@ export function findMediaCandidates(
     for (const el of dataEls) push(candidateFromBackground(el, site));
   }
 
+  const doc = root.nodeType === 9 ? (root as Document) : root.ownerDocument;
+  if (site === 'xiaohongshu' && candidates.length === 0 && doc) {
+    for (const meta of collectXiaohongshuMetaMedia(doc)) {
+      push({
+        element: doc.documentElement,
+        mediaUrl: normalizeMediaUrl(meta.mediaUrl),
+        mediaType: meta.mediaType,
+        sourcePageUrl: doc.location?.href,
+      });
+    }
+  }
+
   return candidates;
 }
 
@@ -573,7 +925,8 @@ export function extractFromRoot(root: Document | Element, locHref: string): Extr
   const candidates = findMediaCandidates(root, locHref);
   const doc = root.nodeType === 9 ? (root as Document) : root.ownerDocument;
   const pageTitle = doc?.title;
-  const extra = site === 'pixiv' && doc ? parsePixivMeta(doc, locHref) : undefined;
+  const extra =
+    site === 'pixiv' && doc ? parsePixivMeta(doc, locHref) : site === 'xiaohongshu' && doc ? parseXiaohongshuMeta(doc) : undefined;
   return { items: buildItemsFromCandidates(candidates, locHref, site, pageTitle, extra) };
 }
 
@@ -583,7 +936,8 @@ export function extractFromElement(el: Element, locHref: string): ExtractResult 
   if (!candidate) return { items: [] };
   const doc = el.ownerDocument ?? undefined;
   const pageTitle = doc?.title;
-  const extra = site === 'pixiv' && doc ? parsePixivMeta(doc, locHref) : undefined;
+  const extra =
+    site === 'pixiv' && doc ? parsePixivMeta(doc, locHref) : site === 'xiaohongshu' && doc ? parseXiaohongshuMeta(doc) : undefined;
   return { items: buildItemsFromCandidates([candidate], locHref, site, pageTitle, extra) };
 }
 

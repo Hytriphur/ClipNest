@@ -116,6 +116,9 @@ async function downloadHlsToTempFile(opts: {
 
       const args = [
         '-y',
+        '-progress',
+        'pipe:1',
+        '-nostats',
         '-loglevel',
         'error',
         '-user_agent',
@@ -140,7 +143,55 @@ async function downloadHlsToTempFile(opts: {
           env.HTTPS_PROXY = opts.proxyUrl;
           env.ALL_PROXY = opts.proxyUrl;
         }
-        const p = childProcess.spawn('ffmpeg', args, { stdio: 'ignore', env });
+        const p = childProcess.spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'], env });
+        let lastBytes = 0;
+        let lastEmit = 0;
+        const emit = (bytes: number) => {
+          if (!Number.isFinite(bytes) || bytes <= 0) return;
+          const now = Date.now();
+          // Throttle progress events a bit.
+          if (bytes <= lastBytes && now - lastEmit < 600) return;
+          lastBytes = Math.max(lastBytes, bytes);
+          lastEmit = now;
+          opts.onProgress?.({ bytes: lastBytes });
+        };
+
+        const bindProgressReader = (stream: NodeJS.ReadableStream | null | undefined) => {
+          if (!stream) return;
+          let buffer = '';
+          stream.setEncoding('utf8');
+          stream.on('data', (chunk: string) => {
+            buffer += chunk;
+            let idx = buffer.indexOf('\n');
+            while (idx >= 0) {
+              const line = buffer.slice(0, idx).trim();
+              buffer = buffer.slice(idx + 1);
+              if (line.startsWith('total_size=')) {
+                const n = Number(line.slice('total_size='.length).trim());
+                if (Number.isFinite(n) && n > 0) emit(n);
+              } else {
+                const sizeMatch = line.match(/size=\s*([0-9]+)kB/i);
+                if (sizeMatch?.[1]) {
+                  const n = Number(sizeMatch[1]) * 1024;
+                  if (Number.isFinite(n) && n > 0) emit(n);
+                }
+              }
+              idx = buffer.indexOf('\n');
+            }
+          });
+        };
+        bindProgressReader(p.stdout);
+        bindProgressReader(p.stderr);
+
+        // Fallback for builds where total_size is not present: poll the tmp file size.
+        const poll = setInterval(() => {
+          try {
+            const st = fs.statSync(tmpPath);
+            if (st.size > 0) emit(st.size);
+          } catch {
+            // ignore
+          }
+        }, 700);
         let timeout: NodeJS.Timeout | null = null;
         if (opts.timeoutMs > 0) {
           timeout = setTimeout(() => {
@@ -153,6 +204,7 @@ async function downloadHlsToTempFile(opts: {
         }
         p.on('error', (err) => reject(err));
         p.on('exit', (code) => {
+          clearInterval(poll);
           if (timeout) clearTimeout(timeout);
           if (code === 0) resolve();
           else reject(new Error(`ffmpeg exit code ${code ?? 'unknown'}`));

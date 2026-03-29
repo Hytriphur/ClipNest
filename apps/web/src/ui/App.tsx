@@ -14,6 +14,8 @@ import {
   fetchTimelineDays,
   favoriteMedia,
   importLocalFolder,
+  pruneTrash,
+  purgeMedia,
   removeCollection,
   removeTag,
   rateMedia,
@@ -27,7 +29,7 @@ import {
   type TagItem,
 } from '../api';
 
-type RouteKey = 'library' | 'archive' | 'timeline' | 'board' | 'favorites' | 'settings';
+type RouteKey = 'library' | 'archive' | 'timeline' | 'board' | 'favorites' | 'trash' | 'settings';
 
 type Filters = {
   type: MediaTypeFilter;
@@ -70,6 +72,13 @@ type ToastState = {
   tone: 'success' | 'error';
   actionLabel?: string;
   onAction?: () => void;
+};
+
+type SettingsState = {
+  libraryRoot: string | null;
+  archiveTemplate: string | null;
+  trashRetentionDays: number;
+  trashAutoCleanupEnabled: boolean;
 };
 
 type LastAction =
@@ -145,6 +154,7 @@ const ROUTE_LABELS: Record<RouteKey, string> = {
   timeline: '时间轴',
   board: '相簿看板',
   favorites: '收藏',
+  trash: '回收站',
   settings: '设置',
 };
 
@@ -153,6 +163,7 @@ const ARCHIVE_HINT =
 
 const LIBRARY_PAGE_SIZE = 36;
 const FAVORITES_PAGE_SIZE = 36;
+const TRASH_PAGE_SIZE = 36;
 const BOARD_COL_PAGE_SIZE = 4;
 const TAGS_QUICK_LIMIT = 4;
 const COLLECTIONS_QUICK_LIMIT = 6;
@@ -166,6 +177,7 @@ function parseRoute(hash: string): RouteKey {
   if (trimmed.startsWith('timeline')) return 'timeline';
   if (trimmed.startsWith('board')) return 'board';
   if (trimmed.startsWith('favorites')) return 'favorites';
+  if (trimmed.startsWith('trash')) return 'trash';
   if (trimmed.startsWith('settings')) return 'settings';
   return 'library';
 }
@@ -266,6 +278,46 @@ function getTotalPages(totalCount: number | null, pageSize: number) {
   return Math.max(1, Math.ceil(totalCount / pageSize));
 }
 
+function MediaPreviewImage(props: {
+  item: MediaItem;
+  alt: string;
+  className?: string;
+  fallbackLabel?: string;
+}) {
+  const { item, alt, className, fallbackLabel } = props;
+  const primarySrc = item.thumbUrl ?? (item.type === 'image' ? item.fileUrl : null);
+  const imageFallbackSrc = item.type === 'image' ? item.fileUrl : null;
+  const [src, setSrc] = useState<string | null>(primarySrc);
+
+  useEffect(() => {
+    setSrc(primarySrc);
+  }, [primarySrc]);
+
+  if (!src) {
+    return (
+      <div className={`media-preview-fallback ${className ?? ''}`}>
+        <span>{fallbackLabel ?? (item.type === 'video' ? '视频预览' : '预览不可用')}</span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      className={className}
+      src={src}
+      alt={alt}
+      loading="lazy"
+      onError={() => {
+        if (imageFallbackSrc && src !== imageFallbackSrc) {
+          setSrc(imageFallbackSrc);
+          return;
+        }
+        setSrc(null);
+      }}
+    />
+  );
+}
+
 export function App() {
   const [route, setRoute] = useState<RouteKey>(() => parseRoute(window.location.hash));
   const [stats, setStats] = useState<{ mediaCount: number; sourceCount: number } | null>(null);
@@ -275,21 +327,32 @@ export function App() {
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [libraryPage, setLibraryPage] = useState(0);
   const [favoritesPage, setFavoritesPage] = useState(0);
+  const [trashPage, setTrashPage] = useState(0);
   const [pagerDrafts, setPagerDrafts] = useState<Record<string, string>>({});
   const [libraryFeed, setLibraryFeed] = useState<FeedState>(EMPTY_FEED);
   const [favoritesFeed, setFavoritesFeed] = useState<FeedState>(EMPTY_FEED);
+  const [trashFeed, setTrashFeed] = useState<FeedState>(EMPTY_FEED);
   const [archiveFeed, setArchiveFeed] = useState<FeedState>(EMPTY_FEED);
   const [boardColumns, setBoardColumns] = useState<BoardColumn[]>([]);
   const [boardLoading, setBoardLoading] = useState(false);
   const [boardError, setBoardError] = useState<string | null>(null);
   const [boardPageMap, setBoardPageMap] = useState<Record<string, number>>({});
-  const [settings, setSettings] = useState<{ libraryRoot: string | null; archiveTemplate: string | null }>({
+  const [settings, setSettings] = useState<SettingsState>({
     libraryRoot: null,
     archiveTemplate: null,
+    trashRetentionDays: 30,
+    trashAutoCleanupEnabled: true,
   });
-  const [settingsDraft, setSettingsDraft] = useState<{ libraryRoot: string; archiveTemplate: string }>({
+  const [settingsDraft, setSettingsDraft] = useState<{
+    libraryRoot: string;
+    archiveTemplate: string;
+    trashRetentionDays: string;
+    trashAutoCleanupEnabled: boolean;
+  }>({
     libraryRoot: '',
     archiveTemplate: '',
+    trashRetentionDays: '30',
+    trashAutoCleanupEnabled: true,
   });
   const [importPath, setImportPath] = useState('');
   const [importStatus, setImportStatus] = useState<string | null>(null);
@@ -326,8 +389,25 @@ export function App() {
   const [unarchivedPreview, setUnarchivedPreview] = useState<MediaItem[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const toastTimerRef = useRef<number | null>(null);
+  const lastActionRef = useRef<LastAction>(null);
   const tagInputRef = useRef<HTMLInputElement | null>(null);
   const collectionInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    lastActionRef.current = lastAction;
+  }, [lastAction]);
+
+  useEffect(() => {
+    if (!lastAction) return;
+    const createdAt = lastAction.createdAt;
+    const t = window.setTimeout(() => {
+      // Only clear if this is still the latest action.
+      if (lastActionRef.current && lastActionRef.current.createdAt === createdAt) {
+        setLastAction(null);
+      }
+    }, 20000);
+    return () => window.clearTimeout(t);
+  }, [lastAction?.createdAt]);
   useEffect(() => {
     const onHash = () => setRoute(parseRoute(window.location.hash));
     window.addEventListener('hashchange', onHash);
@@ -347,6 +427,8 @@ export function App() {
         setSettingsDraft({
           libraryRoot: data.libraryRoot ?? '',
           archiveTemplate: data.archiveTemplate ?? '',
+          trashRetentionDays: String(data.trashRetentionDays ?? 30),
+          trashAutoCleanupEnabled: data.trashAutoCleanupEnabled ?? true,
         });
       })
       .catch(() => null);
@@ -439,6 +521,12 @@ export function App() {
       loadFavorites(favoritesPage);
     }
   }, [route, filters, favoritesPage]);
+
+  useEffect(() => {
+    if (route === 'trash') {
+      loadTrash(trashPage);
+    }
+  }, [route, filters, trashPage]);
 
   useEffect(() => {
     if (route === 'archive') {
@@ -538,6 +626,7 @@ export function App() {
       libraryFeed.items.find((item) => item.id === id) ||
       timelineItems.items.find((item) => item.id === id) ||
       favoritesFeed.items.find((item) => item.id === id) ||
+      trashFeed.items.find((item) => item.id === id) ||
       archiveFeed.items.find((item) => item.id === id) ||
       boardColumns.flatMap((col) => col.items).find((item) => item.id === id) ||
       null
@@ -571,6 +660,51 @@ export function App() {
     toastTimerRef.current = window.setTimeout(() => setToast(null), 3800);
   }
 
+  function getUndoSummary(action: LastAction) {
+    if (!action) return null;
+    if (action.kind === 'collect') {
+      return {
+        title: '已归档到相簿',
+        detail: `${action.ids.length} 张已加入 ${action.collection}，可在 20 秒内撤销。`,
+      };
+    }
+    if (action.kind === 'tag') {
+      return {
+        title: '已添加标签',
+        detail: `${action.ids.length} 张已添加标签 ${action.tag}，可在 20 秒内撤销。`,
+      };
+    }
+    if (action.kind === 'favorite') {
+      return {
+        title: action.favorite ? '已加入收藏' : '已取消收藏',
+        detail: `${action.ids.length} 张图片已更新收藏状态，可在 20 秒内撤销。`,
+      };
+    }
+    if (action.kind === 'delete') {
+      return {
+        title: '已移入回收站',
+        detail: `${action.ids.length} 张图片已删除，可在 20 秒内撤销恢复。`,
+      };
+    }
+    return null;
+  }
+
+  function renderUndoPanel(context: 'archive' | 'global' = 'global') {
+    const summary = getUndoSummary(lastAction);
+    if (!summary) return null;
+    return (
+      <div className={`undo-panel glass ${context === 'archive' ? 'undo-panel-archive' : 'undo-panel-global'}`}>
+        <div className="undo-panel-copy">
+          <div className="undo-panel-title">{summary.title}</div>
+          <div className="undo-panel-detail">{summary.detail}</div>
+        </div>
+        <button className="btn btn-primary" type="button" onClick={undoLastAction}>
+          撤销
+        </button>
+      </div>
+    );
+  }
+
   function updatePagerDraft(key: string, value: string) {
     setPagerDrafts((prev) => ({ ...prev, [key]: value }));
   }
@@ -588,6 +722,17 @@ export function App() {
 
   function jumpToUnarchived() {
     window.location.hash = '#/archive';
+  }
+
+  async function refreshArchiveQueue() {
+    await loadArchive('reset');
+    setArchiveIndex(0);
+    setSelectedId(null);
+    setShowTagInput(false);
+    setShowCollectionInput(false);
+    setTagInput('');
+    setCollectionInput('');
+    showToast({ message: '未归档队列已刷新', tone: 'success' });
   }
 
   function updateFeedItems(
@@ -619,6 +764,7 @@ export function App() {
   function applyMediaUpdate(ids: number[], updater: (item: MediaItem) => MediaItem | null) {
     updateFeedItems(setLibraryFeed, ids, updater);
     updateFeedItems(setFavoritesFeed, ids, updater);
+    updateFeedItems(setTrashFeed, ids, updater);
     updateFeedItems(setArchiveFeed, ids, updater);
     updateFeedItems(setTimelineItems, ids, updater);
     updateBoardItems(ids, updater);
@@ -800,6 +946,44 @@ export function App() {
     }
   }
 
+  async function loadTrash(page = trashPage) {
+    const safePage = Math.max(0, page);
+    const offset = safePage * TRASH_PAGE_SIZE;
+    setTrashFeed((prev) => ({ ...prev, loading: true, error: null }));
+    try {
+      const res = await fetchMedia({
+        offset,
+        limit: TRASH_PAGE_SIZE,
+        type: filters.type,
+        q: filters.q,
+        authorHandle: filters.authorHandle,
+        tag: filters.tag,
+        tagPresence: filters.tagPresence === 'all' ? undefined : filters.tagPresence,
+        collection: filters.collection,
+        from: filters.from,
+        to: filters.to,
+        archived: filters.archived,
+        deleted: 'yes',
+        favorite: filters.favoriteOnly ? true : undefined,
+      });
+      setTrashFeed({
+        items: res.items,
+        nextOffset: res.nextOffset,
+        totalCount: res.totalCount,
+        loading: false,
+        loaded: true,
+        error: null,
+      });
+    } catch (err) {
+      setTrashFeed((prev) => ({
+        ...prev,
+        loading: false,
+        loaded: true,
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
+  }
+
   function refreshLibraryNow() {
     setLibraryPage(0);
     setLibraryFeed(EMPTY_FEED);
@@ -817,6 +1001,14 @@ export function App() {
     setFavoritesFeed(EMPTY_FEED);
     if (route === 'favorites') {
       loadFavorites(0);
+    }
+  }
+
+  function refreshTrashNow() {
+    setTrashPage(0);
+    setTrashFeed(EMPTY_FEED);
+    if (route === 'trash') {
+      loadTrash(0);
     }
   }
 
@@ -918,8 +1110,9 @@ export function App() {
           } as BoardColumn;
         }),
       );
-      setBoardColumns(results);
-      setBoardPageMap(Object.fromEntries(baseColumns.map((col) => [col.key, 0])));
+      const collectionColumns = results.filter((col) => col.scope === 'collection');
+      setBoardColumns(collectionColumns);
+      setBoardPageMap(Object.fromEntries(collectionColumns.map((col) => [col.key, 0])));
       setBoardLoading(false);
     } catch (err) {
       setBoardError(err instanceof Error ? err.message : String(err));
@@ -931,8 +1124,10 @@ export function App() {
     setFilters(filtersDraft);
     setLibraryPage(0);
     setFavoritesPage(0);
+    setTrashPage(0);
     setLibraryFeed(EMPTY_FEED);
     setFavoritesFeed(EMPTY_FEED);
+    setTrashFeed(EMPTY_FEED);
     resetTimelineState();
   }
 
@@ -952,11 +1147,13 @@ export function App() {
       setFilters(next);
       setLibraryPage(0);
       setFavoritesPage(0);
+      setTrashPage(0);
       resetTimelineState();
       return next;
     });
     setLibraryFeed(EMPTY_FEED);
     setFavoritesFeed(EMPTY_FEED);
+    setTrashFeed(EMPTY_FEED);
   }
 
   function resetFilters() {
@@ -964,8 +1161,10 @@ export function App() {
     setFilters(DEFAULT_FILTERS);
     setLibraryPage(0);
     setFavoritesPage(0);
+    setTrashPage(0);
     setLibraryFeed(EMPTY_FEED);
     setFavoritesFeed(EMPTY_FEED);
+    setTrashFeed(EMPTY_FEED);
     resetTimelineState();
     if (route === 'favorites') {
       window.location.hash = '#/library';
@@ -1186,7 +1385,11 @@ export function App() {
     }
   }
 
-  async function removeFromCollection(ids: number[], name: string) {
+  async function removeFromCollection(
+    ids: number[],
+    name: string,
+    opts?: { silent?: boolean; throwOnError?: boolean },
+  ) {
     const nextName = name.trim();
     if (!nextName || !ids.length) return;
     try {
@@ -1196,14 +1399,19 @@ export function App() {
         collections: (item.collections ?? []).filter((c) => c !== nextName),
       }));
     } catch (err) {
-      showToast({
-        message: err instanceof Error ? err.message : String(err),
-        tone: 'error',
-      });
+      if (!opts?.silent) {
+        showToast({
+          message: err instanceof Error ? err.message : String(err),
+          tone: 'error',
+        });
+      }
+      if (opts?.throwOnError) {
+        throw err;
+      }
     }
   }
 
-  async function unarchiveItems(ids: number[], opts?: { silent?: boolean }) {
+  async function unarchiveItems(ids: number[], opts?: { silent?: boolean; throwOnError?: boolean }) {
     if (!ids.length) return;
     try {
       await Promise.all(ids.map((id) => unarchiveMedia(id)));
@@ -1215,10 +1423,15 @@ export function App() {
         });
       }
     } catch (err) {
-      showToast({
-        message: err instanceof Error ? err.message : String(err),
-        tone: 'error',
-      });
+      if (!opts?.silent) {
+        showToast({
+          message: err instanceof Error ? err.message : String(err),
+          tone: 'error',
+        });
+      }
+      if (opts?.throwOnError) {
+        throw err;
+      }
     }
   }
 
@@ -1227,6 +1440,7 @@ export function App() {
     try {
       await Promise.all(ids.map((id) => deleteMedia(id)));
       applyMediaUpdate(ids, () => null);
+      refreshTrashNow();
       setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
       if (selectedId && ids.includes(selectedId)) {
         setSelectedId(null);
@@ -1240,6 +1454,85 @@ export function App() {
           onAction: undoLastAction,
         });
       }
+    } catch (err) {
+      showToast({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      });
+    }
+  }
+
+  async function restoreItems(ids: number[], opts?: { silent?: boolean }) {
+    if (!ids.length) return;
+    try {
+      await Promise.all(ids.map((id) => undeleteMedia(id)));
+      updateFeedItems(setTrashFeed, ids, () => null);
+      setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
+      if (selectedId && ids.includes(selectedId)) {
+        setSelectedId(null);
+      }
+      refreshLibraryNow();
+      refreshFavoritesNow();
+      loadArchive('reset');
+      if (route === 'board') {
+        loadBoard();
+      }
+      if (route === 'trash') {
+        loadTrash(Math.max(0, trashPage));
+      }
+      if (!opts?.silent) {
+        showToast({
+          message: `已恢复 ${ids.length} 项`,
+          tone: 'success',
+        });
+      }
+    } catch (err) {
+      showToast({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      });
+    }
+  }
+
+  async function purgeItems(ids: number[]) {
+    if (!ids.length) return;
+    const confirmed = window.confirm(
+      ids.length === 1 ? '彻底删除后将无法恢复，确认继续？' : `确定彻底删除这 ${ids.length} 项吗？此操作无法撤销。`,
+    );
+    if (!confirmed) return;
+    try {
+      await Promise.all(ids.map((id) => purgeMedia(id)));
+      updateFeedItems(setTrashFeed, ids, () => null);
+      setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
+      if (selectedId && ids.includes(selectedId)) {
+        setSelectedId(null);
+      }
+      fetchStats().then(setStats).catch(() => null);
+      if (route === 'trash') {
+        loadTrash(Math.max(0, trashPage));
+      }
+      showToast({
+        message: `已彻底删除 ${ids.length} 项`,
+        tone: 'success',
+      });
+    } catch (err) {
+      showToast({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      });
+    }
+  }
+
+  async function pruneTrashNow() {
+    const days = Math.max(0, Number(settingsDraft.trashRetentionDays || settings.trashRetentionDays || 30));
+    try {
+      const res = await pruneTrash(days);
+      fetchStats().then(setStats).catch(() => null);
+      refreshTrashNow();
+      showToast({
+        message: `已清理 ${res.result.deletedRows} 项，保留期 ${res.retentionDays} 天`,
+        tone: 'success',
+      });
     } catch (err) {
       showToast({
         message: err instanceof Error ? err.message : String(err),
@@ -1265,10 +1558,22 @@ export function App() {
       showToast({ message: '已撤销标签操作', tone: 'success' });
     }
     if (lastAction.kind === 'collect') {
-      await Promise.all([
-        unarchiveItems(lastAction.ids, { silent: true }),
-        removeFromCollection(lastAction.ids, lastAction.collection),
-      ]);
+      try {
+        await removeFromCollection(lastAction.ids, lastAction.collection, {
+          silent: true,
+          throwOnError: true,
+        });
+        await unarchiveItems(lastAction.ids, {
+          silent: true,
+          throwOnError: true,
+        });
+      } catch (err) {
+        showToast({
+          message: err instanceof Error ? err.message : String(err),
+          tone: 'error',
+        });
+        return;
+      }
       setLastAction(null);
       loadArchive('reset');
       showToast({ message: '已撤销归档操作', tone: 'success' });
@@ -1279,15 +1584,9 @@ export function App() {
       showToast({ message: '已撤销收藏操作', tone: 'success' });
     }
     if (lastAction.kind === 'delete') {
-      await Promise.all(lastAction.ids.map((id) => undeleteMedia(id)));
+      await restoreItems(lastAction.ids, { silent: true });
       setLastAction(null);
-      refreshLibraryNow();
-      refreshFavoritesNow();
-      loadArchive('reset');
-      if (route === 'board') {
-        loadBoard();
-      }
-      showToast({ message: '宸叉挙閿€鍒犻櫎', tone: 'success' });
+      showToast({ message: '已撤销删除', tone: 'success' });
     }
   }
 
@@ -1299,7 +1598,13 @@ export function App() {
 
   function moveSelected(delta: number) {
     const items =
-      route === 'favorites' ? favoritesFeed.items : route === 'timeline' ? timelineItems.items : libraryFeed.items;
+      route === 'favorites'
+        ? favoritesFeed.items
+        : route === 'timeline'
+          ? timelineItems.items
+          : route === 'trash'
+            ? trashFeed.items
+            : libraryFeed.items;
     if (!selectedId || !items.length) return;
     const index = items.findIndex((item) => item.id === selectedId);
     if (index < 0) return;
@@ -1324,14 +1629,19 @@ export function App() {
 
   async function handleSaveSettings() {
     try {
+      const nextRetention = Math.max(0, Math.min(3650, Math.floor(Number(settingsDraft.trashRetentionDays || 30))));
       const res = await saveSettings({
         libraryRoot: settingsDraft.libraryRoot.trim() || null,
         archiveTemplate: settingsDraft.archiveTemplate.trim() || null,
+        trashRetentionDays: nextRetention,
+        trashAutoCleanupEnabled: settingsDraft.trashAutoCleanupEnabled,
       });
       setSettings(res);
       setSettingsDraft({
         libraryRoot: res.libraryRoot ?? '',
         archiveTemplate: res.archiveTemplate ?? '',
+        trashRetentionDays: String(res.trashRetentionDays ?? 30),
+        trashAutoCleanupEnabled: res.trashAutoCleanupEnabled ?? true,
       });
       showToast({ message: '设置已保存', tone: 'success' });
     } catch (err) {
@@ -1341,6 +1651,7 @@ export function App() {
 
   function activeList() {
     if (route === 'favorites') return favoritesFeed.items;
+    if (route === 'trash') return trashFeed.items;
     if (route === 'archive') return archiveFeed.items;
     if (route === 'timeline') return timelineItems.items;
     return libraryFeed.items;
@@ -1354,6 +1665,7 @@ export function App() {
     () => getTotalPages(favoritesFeed.totalCount, FAVORITES_PAGE_SIZE),
     [favoritesFeed.totalCount],
   );
+  const trashPageCount = useMemo(() => getTotalPages(trashFeed.totalCount, TRASH_PAGE_SIZE), [trashFeed.totalCount]);
   const timelineDayPageCount = useMemo(
     () => getTotalPages(timelineDays.totalCount, TIMELINE_DAY_PAGE_SIZE),
     [timelineDays.totalCount],
@@ -1374,6 +1686,12 @@ export function App() {
       setFavoritesPage(Math.max(0, favoritesPageCount - 1));
     }
   }, [favoritesPage, favoritesPageCount]);
+
+  useEffect(() => {
+    if (trashPageCount && trashPage >= trashPageCount) {
+      setTrashPage(Math.max(0, trashPageCount - 1));
+    }
+  }, [trashPage, trashPageCount]);
 
   useEffect(() => {
     if (timelineDayPageCount && timelineDayPage >= timelineDayPageCount) {
@@ -1441,7 +1759,7 @@ export function App() {
           {item.type === 'video' ? (
             <video src={item.fileUrl} poster={item.thumbUrl ?? undefined} muted preload="metadata" />
           ) : (
-            <img src={item.thumbUrl ?? item.fileUrl} alt={item.tags?.join(',') || 'media'} loading="lazy" />
+            <MediaPreviewImage item={item} alt={item.tags?.join(',') || 'media'} />
           )}
           <div className="media-overlay">
             <div className="media-overlay-left">
@@ -1486,6 +1804,85 @@ export function App() {
     );
   }
 
+  function renderTrashTile(item: MediaItem) {
+    const isSelected = selectedIds.includes(item.id);
+    const primarySource = item.sources?.[0];
+    const sourceLabel = primarySource?.authorHandle
+      ? `@${primarySource.authorHandle}`
+      : getSourceHost(primarySource?.sourcePageUrl ?? primarySource?.tweetUrl) ?? '来源未知';
+    const deletedLabel = item.deletedAt ? formatDateTime(item.deletedAt) : formatDateTime(item.savedAt);
+
+    return (
+      <article
+        key={item.id}
+        className={`trash-tile ${isSelected ? 'trash-tile-selected' : ''}`}
+        onClick={() => (multiSelect ? toggleSelect(item.id) : setSelectedId(item.id))}
+      >
+        {multiSelect ? (
+          <button
+            className={`media-check ${isSelected ? 'media-check-active' : ''}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleSelect(item.id);
+            }}
+          >
+            <span className="media-check-box">{isSelected ? '✓' : ''}</span>
+          </button>
+        ) : null}
+        <div className="trash-tile-thumb">
+          <MediaPreviewImage
+            item={item}
+            alt={item.tags?.join(',') || 'trash media'}
+            className="trash-thumb-media"
+            fallbackLabel={item.type === 'video' ? '视频预览不可用' : '预览不可用'}
+          />
+          <div className="trash-tile-badges">
+            {item.type === 'video' ? <span className="trash-badge">视频 / GIF</span> : null}
+            {item.favorite ? <span className="trash-badge trash-badge-favorite">已收藏</span> : null}
+          </div>
+        </div>
+        <div className="trash-tile-body">
+          <div className="trash-tile-title-row">
+            <div className="trash-tile-title">{sourceLabel}</div>
+            {multiSelect && isSelected ? <span className="trash-selected-pill">已选中</span> : null}
+          </div>
+          <div className="trash-tile-date">删除于 {deletedLabel}</div>
+          <div className="trash-tile-tags">
+            {item.tags.length ? (
+              item.tags.slice(0, 3).map((tag) => (
+                <span key={tag} className="trash-tag">
+                  {tag}
+                </span>
+              ))
+            ) : (
+              <span className="trash-tile-hint">还没有标签</span>
+            )}
+          </div>
+        </div>
+        <div className="trash-tile-actions">
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={(event) => {
+              event.stopPropagation();
+              restoreItems([item.id]);
+            }}
+          >
+            恢复
+          </button>
+          <button
+            className="btn btn-danger btn-sm"
+            onClick={(event) => {
+              event.stopPropagation();
+              purgeItems([item.id]);
+            }}
+          >
+            彻底删除
+          </button>
+        </div>
+      </article>
+    );
+  }
+
   function renderMediaGrid(items: MediaItem[]) {
     if (!items.length && route === 'library' && libraryFeed.loaded && !libraryFeed.loading) {
       return <div className="empty-state">暂无内容，试试放宽筛选条件。</div>;
@@ -1493,7 +1890,17 @@ export function App() {
     if (!items.length && route === 'favorites' && favoritesFeed.loaded && !favoritesFeed.loading) {
       return <div className="empty-state">还没有收藏，看到喜欢的图片记得点一下收藏。</div>;
     }
+    if (!items.length && route === 'trash' && trashFeed.loaded && !trashFeed.loading) {
+      return <div className="empty-state">回收站是空的，暂时没有待处理内容。</div>;
+    }
     return <div className="masonry">{items.map(renderMediaCard)}</div>;
+  }
+
+  function renderTrashGrid(items: MediaItem[]) {
+    if (!items.length && trashFeed.loaded && !trashFeed.loading) {
+      return <div className="empty-state">回收站是空的，暂时没有待处理内容。</div>;
+    }
+    return <div className="trash-grid">{items.map(renderTrashTile)}</div>;
   }
 
   function renderPagerLegacy(opts: {
@@ -1907,6 +2314,36 @@ export function App() {
     const selectedItems = selectedIds
       .map((id) => findItemById(id))
       .filter((item): item is MediaItem => Boolean(item));
+    if (route === 'trash') {
+      return (
+        <div className="batch-bar glass">
+          <div className="batch-row batch-row-head">
+            <div className="batch-title">回收站已选择 {count} 项</div>
+            <div className="batch-actions">
+              <button className="btn btn-ghost" onClick={() => toggleSelectAll(activeList())}>
+                全选 / 取消
+              </button>
+              <button className="btn btn-primary" onClick={() => restoreItems(selectedIds)}>
+                恢复
+              </button>
+              <button className="btn btn-danger" onClick={() => purgeItems(selectedIds)}>
+                彻底删除
+              </button>
+            </div>
+          </div>
+          <div className="batch-row batch-row-mid">
+            <div className="batch-hint">
+              回收站中的内容仍可预览。恢复会回到原来的磁盘位置，彻底删除将同时移除真实文件。
+            </div>
+          </div>
+          <div className="batch-row batch-row-footer">
+            <button className="btn" onClick={() => setMultiSelect(false)}>
+              关闭
+            </button>
+          </div>
+        </div>
+      );
+    }
     const tagLists = selectedItems.map((item) => item.tags ?? []);
     const collectionLists = selectedItems.map((item) => item.collections ?? []);
     const commonTags = intersectStrings(tagLists);
@@ -2224,6 +2661,50 @@ export function App() {
               tone: index % 2 === 0 ? 'cool' : 'accent',
             }),
           )}
+        </div>
+      </div>
+    );
+  }
+
+  function pickRibbonItems(source: MediaItem[]) {
+    const out: MediaItem[] = [];
+    const seen = new Set<number>();
+    for (const item of source) {
+      if (seen.has(item.id)) continue;
+      if (!item.thumbUrl && !item.fileUrl) continue;
+      seen.add(item.id);
+      out.push(item);
+      if (out.length >= 20) break;
+    }
+    return out;
+  }
+
+  function renderHeroMarquee(source: MediaItem[], variant: 'cool' | 'warm' | 'mint' = 'cool') {
+    const items = pickRibbonItems(source);
+    if (items.length < 6) return null;
+    const loop = [...items, ...items];
+    return (
+      <div className={`hero-marquee hero-marquee-${variant}`} aria-hidden="true">
+        <div className="hero-marquee-lane hero-marquee-lane-a">
+          <div className="hero-marquee-track hero-marquee-track-a">
+            {loop.map((item, idx) => (
+              <div key={`a-${item.id}-${idx}`} className="hero-marquee-card">
+                <img src={item.thumbUrl ?? item.fileUrl} alt="" loading="lazy" />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="hero-marquee-lane hero-marquee-lane-b">
+          <div className="hero-marquee-track hero-marquee-track-b">
+            {loop
+              .slice()
+              .reverse()
+              .map((item, idx) => (
+                <div key={`b-${item.id}-${idx}`} className="hero-marquee-card">
+                  <img src={item.thumbUrl ?? item.fileUrl} alt="" loading="lazy" />
+                </div>
+              ))}
+          </div>
         </div>
       </div>
     );
@@ -2629,9 +3110,75 @@ export function App() {
     );
   }
 
+  function renderTrashCompact() {
+    const retentionDays = Math.max(0, Number(settings.trashRetentionDays || 30));
+    const trashCount = trashFeed.totalCount ?? trashFeed.items.length;
+    return (
+      <div className="page page-paged page-trash">
+        <section className="trash-header glass">
+          <div className="trash-header-copy">
+            <div className="page-kicker">回收站</div>
+            <div className="h-title text-xl">误删先放这里，再决定恢复还是彻底清理</div>
+            <div className="muted-text">
+              当前 {trashCount} 项，保留 {retentionDays} 天
+              {settings.trashAutoCleanupEnabled ? '，系统会自动清理超期内容。' : '，自动清理已关闭。'}
+            </div>
+          </div>
+          <div className="trash-header-stats">
+            <div className="trash-stat">
+              <span className="trash-stat-label">待处理</span>
+              <strong>{trashCount}</strong>
+            </div>
+            <div className="trash-stat">
+              <span className="trash-stat-label">清理策略</span>
+              <strong>{settings.trashAutoCleanupEnabled ? '自动' : '手动'}</strong>
+            </div>
+          </div>
+          <div className="board-actions">
+            <button className="btn btn-ghost" onClick={refreshTrashNow}>
+              刷新
+            </button>
+            <button className="btn" onClick={pruneTrashNow}>
+              立即清理超期
+            </button>
+          </div>
+        </section>
+        {renderFilters()}
+        {renderBatchBar()}
+        {trashFeed.error ? <div className="error-state">{trashFeed.error}</div> : null}
+        {renderTrashGrid(trashFeed.items)}
+        {trashFeed.loaded || trashFeed.loading
+          ? renderPager({
+              pagerKey: 'trash',
+              page: trashPage,
+              hasNext: trashPageCount ? trashPage + 1 < trashPageCount : trashFeed.nextOffset > 0,
+              loading: trashFeed.loading,
+              onPrev: () => setTrashPage((prev) => Math.max(0, prev - 1)),
+              onNext: () =>
+                setTrashPage((prev) => (trashPageCount ? Math.min(trashPageCount - 1, prev + 1) : prev + 1)),
+              onJump: (page) =>
+                setTrashPage(Math.max(0, trashPageCount ? Math.min(trashPageCount - 1, page) : page)),
+              totalPages: trashPageCount,
+              totalCount: trashFeed.totalCount,
+            })
+          : null}
+      </div>
+    );
+  }
+
   function renderLibrary() {
     return (
       <div className="page page-paged">
+        <section className="page-hero glass">
+          {renderHeroMarquee(libraryFeed.items, 'cool')}
+          <div className="page-hero-copy">
+            <div className="page-kicker">图库</div>
+            <div className="h-title page-hero-title">把喜欢的图像收进一个更舒服的视野里</div>
+            <div className="page-hero-sub">
+              这里是浏览与筛选的主入口。上方的“胶片带”只负责氛围，不会遮挡文字，也不会影响你的点击与滚动。
+            </div>
+          </div>
+        </section>
         {renderFilters()}
         {renderAlbumPreviewRow()}
         {renderBatchBar()}
@@ -2661,6 +3208,14 @@ export function App() {
   function renderFavorites() {
     return (
       <div className="page page-paged">
+        <section className="page-hero glass">
+          {renderHeroMarquee(favoritesFeed.items.length ? favoritesFeed.items : libraryFeed.items, 'warm')}
+          <div className="page-hero-copy">
+            <div className="page-kicker">收藏</div>
+            <div className="h-title page-hero-title">收藏夹像一条安静的精选流</div>
+            <div className="page-hero-sub">更适合回看、筛掉噪音，也方便继续补标签和归档。</div>
+          </div>
+        </section>
         {renderFilters()}
         {renderBatchBar()}
         {favoritesFeed.error ? <div className="error-state">{favoritesFeed.error}</div> : null}
@@ -2686,6 +3241,60 @@ export function App() {
     );
   }
 
+  function renderTrash() {
+    const retentionDays = Math.max(0, Number(settings.trashRetentionDays || 30));
+    return (
+      <div className="page page-paged">
+        <section className="page-hero glass">
+          {renderHeroMarquee(trashFeed.items.length ? trashFeed.items : libraryFeed.items, 'warm')}
+          <div className="page-hero-copy">
+            <div className="page-kicker">回收站</div>
+            <div className="h-title page-hero-title">误删先放这里，再决定恢复还是彻底清理</div>
+            <div className="page-hero-sub">
+              当前保留期 {retentionDays} 天
+              {settings.trashAutoCleanupEnabled ? '，系统会自动清理超期内容。' : '，自动清理已关闭。'}
+            </div>
+          </div>
+        </section>
+        <div className="board-header glass">
+          <div>
+            <div className="h-title text-xl">回收站管理</div>
+            <div className="muted-text">
+              支持搜索、筛选、恢复和彻底删除。彻底删除会同步清理真实文件与缩略图。
+            </div>
+          </div>
+          <div className="board-actions">
+            <button className="btn btn-ghost" onClick={refreshTrashNow}>
+              刷新
+            </button>
+            <button className="btn" onClick={pruneTrashNow}>
+              立即清理超期
+            </button>
+          </div>
+        </div>
+        {renderFilters()}
+        {renderBatchBar()}
+        {trashFeed.error ? <div className="error-state">{trashFeed.error}</div> : null}
+        {renderMediaGrid(trashFeed.items)}
+        {trashFeed.loaded || trashFeed.loading
+          ? renderPager({
+              pagerKey: 'trash',
+              page: trashPage,
+              hasNext: trashPageCount ? trashPage + 1 < trashPageCount : trashFeed.nextOffset > 0,
+              loading: trashFeed.loading,
+              onPrev: () => setTrashPage((prev) => Math.max(0, prev - 1)),
+              onNext: () =>
+                setTrashPage((prev) => (trashPageCount ? Math.min(trashPageCount - 1, prev + 1) : prev + 1)),
+              onJump: (page) =>
+                setTrashPage(Math.max(0, trashPageCount ? Math.min(trashPageCount - 1, page) : page)),
+              totalPages: trashPageCount,
+              totalCount: trashFeed.totalCount,
+            })
+          : null}
+      </div>
+    );
+  }
+
   function renderTimeline() {
     const recentRange = getRecentRange(7);
     const monthRange = getRecentRange(30);
@@ -2701,8 +3310,17 @@ export function App() {
     const itemHasNext = timelineItemsPageCount
       ? timelineItemsPage + 1 < timelineItemsPageCount
       : timelineItems.nextOffset > 0;
+    const timelineRibbonItems = timelineItems.items.length ? timelineItems.items : libraryFeed.items;
     return (
       <div className="page page-paged">
+        <section className="page-hero glass">
+          {renderHeroMarquee(timelineRibbonItems, 'mint')}
+          <div className="page-hero-copy">
+            <div className="page-kicker">时间轴</div>
+            <div className="h-title page-hero-title">让收藏沿着时间穿梭，而不是堆成一堵墙</div>
+            <div className="page-hero-sub">先按日期缩小范围，再进入当天浏览。</div>
+          </div>
+        </section>
         {renderFilters()}
         <div className="timeline-toolbar glass">
           <div className="filters-row">
@@ -2850,22 +3468,31 @@ export function App() {
   }
 
   function renderBoard() {
+    const boardHeroItems = boardColumns.flatMap((col) => col.items).slice(0, 20);
     return (
-      <div className="page">
+      <div className="page board-page">
+        <section className="page-hero glass">
+          {renderHeroMarquee(boardHeroItems.length ? boardHeroItems : libraryFeed.items, 'warm')}
+          <div className="page-hero-copy">
+            <div className="page-kicker">相簿</div>
+            <div className="h-title page-hero-title">每个相簿都像一组正在展开的视觉故事板</div>
+            <div className="page-hero-sub">点击相簿进入浏览，并自动按相簿筛选。</div>
+          </div>
+        </section>
         <div className="board-header glass">
           <div>
-            <div className="h-title text-xl">相簿看板</div>
-            <div className="muted-text">浏览各相簿与未归档队列，点击即可查看细节。</div>
+            <div className="h-title text-xl">{'\u76f8\u7c3f\u770b\u677f'}</div>
+            <div className="muted-text">{'\u8fd9\u91cc\u53ea\u5c55\u793a\u5df2\u521b\u5efa\u7684\u76f8\u7c3f\u3002\u70b9\u51fb\u76f8\u7c3f\u5373\u53ef\u8fdb\u5165\u56fe\u5e93\uff0c\u5e76\u81ea\u52a8\u6309\u76f8\u7c3f\u7b5b\u9009\u6d4f\u89c8\u3002'}</div>
           </div>
           <div className="board-actions">
             <button className="btn btn-ghost" onClick={loadBoard}>
-              刷新
+              {'\u5237\u65b0'}
             </button>
             <button
               className={`btn ${showCreateCollection ? 'btn-primary' : ''}`}
               onClick={() => setShowCreateCollection((prev) => !prev)}
             >
-              {showCreateCollection ? '关闭新相簿' : '新相簿'}
+              {showCreateCollection ? '\u6536\u8d77\u65b0\u76f8\u7c3f' : '\u65b0\u5efa\u76f8\u7c3f'}
             </button>
           </div>
         </div>
@@ -2873,7 +3500,7 @@ export function App() {
           <div className="board-create glass">
             <input
               className="input input-compact"
-              placeholder="新相簿名"
+              placeholder={'\u65b0\u76f8\u7c3f\u540d'}
               value={collectionCreateInput}
               onChange={(event) => setCollectionCreateInput(event.target.value)}
               onKeyDown={(event) => {
@@ -2890,40 +3517,46 @@ export function App() {
                 setCollectionCreateInput('');
               }}
             >
-              创建并归档
+              {'\u521b\u5efa\u5e76\u5f52\u6863'}
             </button>
           </div>
         ) : null}
-        {renderAlbumPreviewRow()}
         {boardError ? <div className="error-state">{boardError}</div> : null}
-        {boardLoading ? <div className="loading-row">正在加载看板...</div> : null}
-        <div className="board">
+        {boardLoading ? <div className="loading-row">{'\u6b63\u5728\u52a0\u8f7d\u76f8\u7c3f\u770b\u677f...'}</div> : null}
+        {!boardLoading && boardColumns.length === 0 ? <div className="empty-state">{'\u8fd8\u6ca1\u6709\u76f8\u7c3f\uff0c\u5148\u521b\u5efa\u4e00\u4e2a\u5427\u3002'}</div> : null}
+        <div className="board-stack">
           {boardColumns.map((col) => {
             const page = boardPageMap[col.key] ?? 0;
             const totalPages = getTotalPages(col.totalCount ?? null, BOARD_COL_PAGE_SIZE);
             const hasNext = totalPages ? page + 1 < totalPages : col.items.length === BOARD_COL_PAGE_SIZE;
             const showPager = totalPages ? totalPages > 1 : page > 0 || hasNext;
             return (
-              <div key={col.key} className="board-col glass">
-                <div className="board-col-header">
-                  <div className="board-col-title">{col.title}</div>
-                  {col.hint ? <div className="board-col-hint">{col.hint}</div> : null}
-                  {typeof col.totalCount === 'number' ? (
-                    <div className="board-col-meta">共 {col.totalCount} 张</div>
-                  ) : null}
+              <section key={col.key} className="board-album glass">
+                <div className="board-album-header">
+                  <div>
+                    <div className="board-album-title">{col.title}</div>
+                    <div className="board-album-meta">
+                      {typeof col.totalCount === 'number' ? `\u5171 ${col.totalCount} \u5f20` : '\u6b63\u5728\u7edf\u8ba1\u6570\u91cf'}
+                    </div>
+                  </div>
+                  <button className="btn btn-primary" onClick={() => jumpToCollection(col.collectionName ?? col.title)}>
+                    {'\u6253\u5f00\u76f8\u7c3f'}
+                  </button>
                 </div>
-                <div className="board-col-body">
-                  {col.loading ? <div className="loading-row">正在加载...</div> : null}
-                  {!col.loading && col.items.length === 0 ? <div className="empty-state">空相簿</div> : null}
-                  {col.items.map((item) => (
-                    <button key={item.id} className="board-card" onClick={() => setSelectedId(item.id)}>
-                      <img src={item.thumbUrl ?? item.fileUrl} alt="media" loading="lazy" />
-                      <div className="board-card-meta">
-                        <span>{item.tags.slice(0, 1).join(' ') || '未标记'}</span>
-                        <span>{item.favorite ? '已收藏' : ''}</span>
-                      </div>
-                    </button>
-                  ))}
+                <div className="board-album-preview">
+                  {col.loading ? <div className="loading-row">{'\u6b63\u5728\u52a0\u8f7d\u9884\u89c8...'}</div> : null}
+                  {!col.loading && col.items.length === 0 ? <div className="empty-state">{'\u8fd9\u4e2a\u76f8\u7c3f\u8fd8\u6ca1\u6709\u56fe\u7247'}</div> : null}
+                  {!col.loading
+                    ? col.items.map((item) => (
+                        <button key={item.id} className="board-preview-card" onClick={() => setSelectedId(item.id)}>
+                          <img src={item.thumbUrl ?? item.fileUrl} alt="media" loading="lazy" />
+                          <div className="board-preview-meta">
+                            <span>{item.tags.slice(0, 2).join(' / ') || '\u672a\u6253\u6807\u7b7e'}</span>
+                            {item.favorite ? <span>{'\u5df2\u6536\u85cf'}</span> : null}
+                          </div>
+                        </button>
+                      ))
+                    : null}
                 </div>
                 {showPager
                   ? renderPager({
@@ -2945,18 +3578,20 @@ export function App() {
                       },
                       onJump: (nextPage) => {
                         const bounded = totalPages ? Math.min(totalPages - 1, nextPage) : nextPage;
-                        setBoardPageMap((prev) => ({ ...prev, [col.key]: Math.max(0, bounded) }));
-                        loadBoardColumn(col, Math.max(0, bounded));
+                        const targetPage = Math.max(0, bounded);
+                        setBoardPageMap((prev) => ({ ...prev, [col.key]: targetPage }));
+                        loadBoardColumn(col, targetPage);
                       },
                     })
                   : null}
-              </div>
+              </section>
             );
           })}
         </div>
       </div>
     );
   }
+
 
   function renderArchiveLegacy() {
     if (archiveFeed.error) {
@@ -3160,24 +3795,25 @@ export function App() {
       return <div className="error-state">{archiveFeed.error}</div>;
     }
     if (archiveFeed.loaded && archiveFeed.items.length === 0) {
-      return <div className="empty-state">所有内容都已归档，可以回到图库或收藏继续浏览。</div>;
+      return <div className="empty-state">{'\u6240\u6709\u5185\u5bb9\u90fd\u5df2\u5f52\u6863\uff0c\u53ef\u4ee5\u56de\u5230\u56fe\u5e93\u6216\u6536\u85cf\u7ee7\u7eed\u6d4f\u89c8\u3002'}</div>;
     }
     return (
       <div className="archive-page">
         <div className="archive-header glass">
           <div>
-            <div className="h-title text-xl">归档模式</div>
+            <div className="h-title text-xl">{'\u5f52\u6863\u6a21\u5f0f'}</div>
             <div className="muted-text">{ARCHIVE_HINT}</div>
           </div>
           <div className="archive-actions">
-            <button className="btn" onClick={() => loadArchive('reset')}>
-              刷新队列
+            <button className="btn" onClick={refreshArchiveQueue}>
+              {'\u5237\u65b0\u961f\u5217'}
             </button>
             <div className="pill">
-              进度 {archiveIndex + 1}/{archiveFeed.items.length || 1}
+              {`\u8fdb\u5ea6 ${archiveFeed.items.length ? archiveIndex + 1 : 0}/${archiveFeed.items.length}`}
             </div>
           </div>
         </div>
+        {renderUndoPanel('archive')}
         <div className="archive-view">
           <div className="archive-main glass">
             {archiveItem ? (
@@ -3191,34 +3827,34 @@ export function App() {
                 </div>
                 <div className="archive-toolbar">
                   <button className="btn btn-ghost" onClick={() => moveArchive(-1)}>
-                    上一张
+                    {'\u4e0a\u4e00\u5f20'}
                   </button>
                   <button className="btn btn-ghost" onClick={() => moveArchive(1)}>
-                    下一张
+                    {'\u4e0b\u4e00\u5f20'}
                   </button>
                   <button
                     className={`btn ${archiveItem.favorite ? 'btn-primary' : ''}`}
                     onClick={() => toggleFavorite([archiveItem.id], !archiveItem.favorite)}
                   >
-                    {archiveItem.favorite ? '取消收藏' : '收藏'}
+                    {archiveItem.favorite ? '\u53d6\u6d88\u6536\u85cf' : '\u6536\u85cf'}
                   </button>
                   <button className="btn btn-danger" onClick={() => deleteItems([archiveItem.id])}>
-                    删除
+                    {'\u5220\u9664'}
                   </button>
-                  <button className="btn btn-ghost" onClick={undoLastAction}>
-                    撤销
+                  <button className="btn btn-ghost" onClick={undoLastAction} disabled={!lastAction}>
+                    {'\u64a4\u9500\u4e0a\u4e00\u6b65'}
                   </button>
                 </div>
               </>
             ) : (
-              <div className="loading-row">正在加载...</div>
+              <div className="loading-row">{'\u6b63\u5728\u52a0\u8f7d...'}</div>
             )}
           </div>
           <div className="archive-side glass">
             {archiveItem ? (
               <>
                 <div className="section">
-                  <div className="section-title">快速归档</div>
+                  <div className="section-title">{'\u5feb\u901f\u5f52\u6863'}</div>
                   <div className="chip-grid">
                     {collections.map((col) => (
                       <button
@@ -3230,7 +3866,7 @@ export function App() {
                       </button>
                     ))}
                     <button className="pill" onClick={() => setShowCollectionInput((prev) => !prev)}>
-                      {showCollectionInput ? '收起自定义' : '自定义相簿'}
+                      {showCollectionInput ? '\u6536\u8d77\u81ea\u5b9a\u4e49' : '\u65b0\u5efa\u76f8\u7c3f'}
                     </button>
                   </div>
                   {showCollectionInput ? (
@@ -3238,7 +3874,7 @@ export function App() {
                       <input
                         ref={collectionInputRef}
                         className="input input-compact"
-                        placeholder="新相簿名"
+                        placeholder={'\u65b0\u76f8\u7c3f\u540d'}
                         value={collectionInput}
                         onChange={(event) => setCollectionInput(event.target.value)}
                         onKeyDown={(event) => {
@@ -3255,27 +3891,32 @@ export function App() {
                           setCollectionInput('');
                         }}
                       >
-                        归档
+                        {'\u5f52\u6863'}
                       </button>
                     </div>
                   ) : null}
                 </div>
                 <div className="section">
-                  <div className="section-title">标签</div>
+                  <div className="section-title">{'\u5df2\u6253\u6807\u7b7e'}</div>
                   {appliedTags.length ? (
                     <div className="chip-grid chip-grid-applied">
                       {appliedTags.map((name) => (
                         <button
                           key={name}
                           className="pill pill-applied"
-                          title="Remove"
+                          title={'\u79fb\u9664\u6807\u7b7e'}
                           onClick={() => removeTags([archiveItem.id], name)}
                         >
                           {name}
                         </button>
                       ))}
                     </div>
-                  ) : null}
+                  ) : (
+                    <div className="muted-text">{'\u8fd9\u5f20\u56fe\u7247\u8fd8\u6ca1\u6709\u6807\u7b7e\u3002'}</div>
+                  )}
+                </div>
+                <div className="section">
+                  <div className="section-title">{'\u5e38\u7528\u6807\u7b7e'}</div>
                   <div className="chip-grid chip-grid-common">
                     {availableTags.map((tag) => (
                       <button key={tag.id} className="pill" onClick={() => addTags([archiveItem.id], tag.name)}>
@@ -3283,7 +3924,7 @@ export function App() {
                       </button>
                     ))}
                     <button className="pill" onClick={() => setShowTagInput((prev) => !prev)}>
-                      {showTagInput ? '收起自定义' : '自定义标签'}
+                      {showTagInput ? '\u6536\u8d77\u81ea\u5b9a\u4e49' : '\u81ea\u5b9a\u4e49\u6807\u7b7e'}
                     </button>
                   </div>
                   {showTagInput ? (
@@ -3291,7 +3932,7 @@ export function App() {
                       <input
                         ref={tagInputRef}
                         className="input input-compact"
-                        placeholder="添加标签"
+                        placeholder={'\u6dfb\u52a0\u6807\u7b7e'}
                         value={tagInput}
                         onChange={(event) => setTagInput(event.target.value)}
                         onKeyDown={(event) => {
@@ -3308,20 +3949,20 @@ export function App() {
                           setTagInput('');
                         }}
                       >
-                        添加
+                        {'\u6dfb\u52a0'}
                       </button>
                     </div>
                   ) : null}
                 </div>
                 <div className="section">
-                  <div className="section-title">来源</div>
+                  <div className="section-title">{'\u6765\u6e90'}</div>
                   <div className="meta-list">
                     {archiveItem.sources.map((source, index) => (
                       <div key={`${source.tweetUrl ?? 'src'}-${index}`} className="meta-row">
                         <div>
                           {source.authorHandle
                             ? `@${source.authorHandle}`
-                            : getSourceHost(source.sourcePageUrl ?? source.tweetUrl) ?? '未知来源'}
+                            : getSourceHost(source.sourcePageUrl ?? source.tweetUrl) ?? '\u672a\u77e5\u6765\u6e90'}
                         </div>
                         <div className="muted-text">{formatDateTime(source.collectedAt)}</div>
                       </div>
@@ -3333,15 +3974,13 @@ export function App() {
           </div>
         </div>
         <div className="archive-strip-header">
-          <div className="muted-text">
-            缩略图 {pageIndex + 1}/{pageCount}
-          </div>
+          <div className="muted-text">{`\u7f29\u7565\u56fe\u9875 ${pageIndex + 1}/${pageCount}`}</div>
           <div className="archive-strip-actions">
             <button className="btn btn-ghost" onClick={() => jumpPage(-1)} disabled={pageIndex === 0}>
-              上一页
+              {'\u4e0a\u4e00\u9875'}
             </button>
             <button className="btn btn-ghost" onClick={() => jumpPage(1)} disabled={pageIndex + 1 >= pageCount}>
-              下一页
+              {'\u4e0b\u4e00\u9875'}
             </button>
           </div>
         </div>
@@ -3349,13 +3988,13 @@ export function App() {
           {pageItems.map((item, idx) => {
             const absoluteIndex = pageStart + idx;
             return (
-            <button
-              key={item.id}
-              className={`strip-item ${absoluteIndex === archiveIndex ? 'strip-item-active' : ''}`}
-              onClick={() => setArchiveIndex(absoluteIndex)}
-            >
-              <img src={item.thumbUrl ?? item.fileUrl} alt="thumb" />
-            </button>
+              <button
+                key={item.id}
+                className={`strip-item ${absoluteIndex === archiveIndex ? 'strip-item-active' : ''}`}
+                onClick={() => setArchiveIndex(absoluteIndex)}
+              >
+                <img src={item.thumbUrl ?? item.fileUrl} alt="thumb" />
+              </button>
             );
           })}
         </div>
@@ -3363,22 +4002,28 @@ export function App() {
     );
   }
 
+
   function renderSettings() {
     const previewName = previewArchiveName(settingsDraft.archiveTemplate, selectedItem ?? libraryFeed.items[0]);
+    const retentionDays = Math.max(0, Number(settingsDraft.trashRetentionDays || 30));
     return (
       <div className="page">
         <div className="settings glass">
           <div className="h-title text-xl">设置</div>
           <div className="muted-text">
             当前根目录：{settings.libraryRoot ? settings.libraryRoot : '未设置'} · 命名模板：
-            {settings.archiveTemplate ? settings.archiveTemplate : '默认'}
+            {settings.archiveTemplate ? settings.archiveTemplate : '默认'} · 回收站保留：
+            {settings.trashRetentionDays} 天
           </div>
           <div className="settings-section">
             <div className="settings-title">根图库目录</div>
-            <div className="muted-text">归档会把图片移动到该目录下的相簿文件夹。</div>
+            <div className="muted-text">
+              归档会把图片移动到该目录下的相簿文件夹；未归档内容放在 <code>_unarchived</code>，索引和回收站放在{' '}
+              <code>.clipnest</code>。
+            </div>
             <input
               className="input"
-              placeholder="例如 D:\\\\XLibrary"
+              placeholder="例如 D:\\\\ClipNestLibrary"
               value={settingsDraft.libraryRoot}
               onChange={(event) => setSettingsDraft({ ...settingsDraft, libraryRoot: event.target.value })}
             />
@@ -3395,6 +4040,37 @@ export function App() {
               onChange={(event) => setSettingsDraft({ ...settingsDraft, archiveTemplate: event.target.value })}
             />
             <div className="preview-box">预览：{previewName || '（空）'}</div>
+          </div>
+          <div className="settings-section">
+            <div className="settings-title">回收站</div>
+            <div className="muted-text">删除的内容会先进入回收站，并按保留周期自动清理。</div>
+            <div className="inline-input">
+              <input
+                className="input input-compact"
+                type="number"
+                min={0}
+                max={3650}
+                placeholder="30"
+                value={settingsDraft.trashRetentionDays}
+                onChange={(event) => setSettingsDraft({ ...settingsDraft, trashRetentionDays: event.target.value })}
+              />
+              <div className="preview-box">当前保留 {retentionDays} 天</div>
+            </div>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={settingsDraft.trashAutoCleanupEnabled}
+                onChange={(event) =>
+                  setSettingsDraft({ ...settingsDraft, trashAutoCleanupEnabled: event.target.checked })
+                }
+              />
+              <span>启动时和后台维护时自动清理超期内容</span>
+            </label>
+            <div className="settings-actions">
+              <button className="btn btn-ghost" onClick={pruneTrashNow}>
+                立即清理超期内容
+              </button>
+            </div>
           </div>
           <div className="settings-actions">
             <button className="btn btn-primary" onClick={handleSaveSettings}>
@@ -3475,23 +4151,42 @@ export function App() {
                   {selectedItem.origin === 'local' ? '本地导入' : '站点采集'}
                 </span>
                 {selectedItem.archivedAt ? <span className="meta-chip meta-chip-archived">已归档</span> : null}
+                {selectedItem.deletedAt ? <span className="meta-chip">回收站</span> : null}
                 {selectedItem.favorite ? <span className="meta-chip meta-chip-fav">已收藏</span> : null}
               </div>
+              {selectedItem.deletedAt ? (
+                <div className="muted-text">
+                  已于 {formatDateTime(selectedItem.deletedAt)} 移入回收站。可恢复到原路径，或彻底删除文件。
+                </div>
+              ) : null}
               <div className="drawer-actions">
-                <button
-                  className={`btn ${selectedItem.favorite ? 'btn-primary' : ''}`}
-                  onClick={() => toggleFavorite([selectedItem.id], !selectedItem.favorite)}
-                >
-                  {selectedItem.favorite ? '取消收藏' : '收藏'}
-                </button>
-                {selectedItem.archivedAt ? (
-                  <button className="btn" onClick={() => unarchiveItems([selectedItem.id])}>
-                    撤销归档
-                  </button>
-                ) : null}
-                <button className="btn btn-danger" onClick={() => deleteItems([selectedItem.id])}>
-                  删除
-                </button>
+                {selectedItem.deletedAt ? (
+                  <>
+                    <button className="btn btn-primary" onClick={() => restoreItems([selectedItem.id])}>
+                      恢复
+                    </button>
+                    <button className="btn btn-danger" onClick={() => purgeItems([selectedItem.id])}>
+                      彻底删除
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      className={`btn ${selectedItem.favorite ? 'btn-primary' : ''}`}
+                      onClick={() => toggleFavorite([selectedItem.id], !selectedItem.favorite)}
+                    >
+                      {selectedItem.favorite ? '取消收藏' : '收藏'}
+                    </button>
+                    {selectedItem.archivedAt ? (
+                      <button className="btn" onClick={() => unarchiveItems([selectedItem.id])}>
+                        撤销归档
+                      </button>
+                    ) : null}
+                    <button className="btn btn-danger" onClick={() => deleteItems([selectedItem.id])}>
+                      删除
+                    </button>
+                  </>
+                )}
                 {openUrl ? (
                   <a className="btn" href={openUrl} target="_blank" rel="noreferrer">
                     {primarySource?.tweetUrl ? '打开原推文' : '打开来源'}
@@ -3692,6 +4387,7 @@ export function App() {
       <main className="main">
         {route === 'library' ? renderLibrary() : null}
         {route === 'favorites' ? renderFavorites() : null}
+        {route === 'trash' ? renderTrashCompact() : null}
         {route === 'timeline' ? renderTimeline() : null}
         {route === 'board' ? renderBoard() : null}
         {route === 'archive' ? renderArchive() : null}
@@ -3705,7 +4401,7 @@ export function App() {
       {toast ? (
         <div className={`toast ${toast.tone}`}>
           <span>{toast.message}</span>
-          {toast.actionLabel && toast.onAction ? (
+          {route !== 'archive' && toast.actionLabel && toast.onAction ? (
             <button className="toast-action" onClick={toast.onAction}>
               {toast.actionLabel}
             </button>

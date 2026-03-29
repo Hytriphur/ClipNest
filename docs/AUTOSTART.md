@@ -1,24 +1,63 @@
 # Autostart
 
-This file provides boot autostart options. The default is to autostart only the server. Open the web UI manually at `http://localhost:5173`.
+This file provides reliable boot autostart options.
 
-## Windows (Task Scheduler)
-1. Optional, build once
-```
+Preferred on Windows:
+- Use the built-in scripts in `scripts/`
+- They create hidden Scheduled Tasks (no console window)
+- They remove old Startup-folder entries from legacy setup
+
+## Windows (Recommended)
+1. Build once
+```powershell
+npm install
 npm run build -w apps/server
+npm run build -w apps/web
 ```
-2. Open Task Scheduler and create a task
-3. Action: Start a program
-4. Program/script: `node`
-5. Add arguments:
+2. Install hidden autostart for both server and web
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clipnest-autostart-all.ps1
 ```
-apps/server/dist/index.js
+3. Verify
+```powershell
+Get-ScheduledTask -TaskName "ClipNest Server","ClipNest Web" | Select-Object TaskName,State
 ```
-6. Start in: the repo root directory
+4. Health check
+```powershell
+Invoke-RestMethod http://localhost:5174/api/health
+```
 
-If you want dev mode, use this argument instead:
+Open web UI:
+- `http://localhost:5173`
+
+### Server-only / Web-only installers
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clipnest-autostart.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clipnest-autostart-web.ps1
 ```
-node_modules/npm/bin/npm-cli.js run dev -w apps/server
+
+### Logs
+- `logs/server.log`
+- `logs/web.log`
+
+### Remove tasks
+```powershell
+Unregister-ScheduledTask -TaskName "ClipNest Server" -Confirm:$false
+Unregister-ScheduledTask -TaskName "ClipNest Web" -Confirm:$false
+```
+
+### Troubleshooting
+- If web is missing, ensure `apps/web/dist/index.html` exists.
+- If server is missing, ensure `apps/server/dist/index.js` exists.
+- Web uses fixed `5173` now (strict mode). If that port is occupied, task will fail fast and write reason to `logs/web.log`.
+- Check who occupies `5173`:
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 5173 | Select-Object LocalAddress,LocalPort,OwningProcess
+Get-Process -Id <OwningProcess>
+```
+- Reinstall all autostart tasks after upgrades:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clipnest-autostart-all.ps1
 ```
 
 ## macOS (launchd)

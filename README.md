@@ -6,6 +6,7 @@ ClipNest is a local-first image and video collector for X and other sites. The e
 - Manual save, batch save, and auto tasks
 - Local files with dedupe and SQLite index
 - Library UI for filters, tags, collections, and source backtracking
+- Recycle bin with restore, permanent delete, and timed cleanup
 - No official X API required
 
 ## Architecture
@@ -38,17 +39,26 @@ curl http://localhost:5174/api/health
 ```
 
 ## Data Directory
-Default data directory
+Default managed data directory
 - Windows: `%USERPROFILE%\.clipnest\`
 - macOS/Linux: `~/.clipnest/`
 
 Legacy data directory fallback
 - If `~/.x-image-collector/` exists and `~/.clipnest/` does not, ClipNest will use the legacy directory automatically.
 
-Layout
-- `db.sqlite`
-- `media/`
-- `thumbs/`
+When a library root is configured in Settings, ClipNest will migrate its managed data into the library root:
+- `<LibraryRoot>/_unarchived/`: files that are saved but not yet archived into albums
+- `<LibraryRoot>/.clipnest/db.sqlite`: SQLite index
+- `<LibraryRoot>/.clipnest/thumbs/`: thumbnails
+- `<LibraryRoot>/.clipnest/trash/`: recycle bin payload and thumbnails
+
+Archive mapping
+- Every album maps to a real folder under the library root
+- Moving an item into an album moves the underlying file on disk
+- Deleting an item moves it into ClipNest trash first, then optional timed cleanup can permanently remove it
+
+Legacy folder rename
+- If your existing library root folder is literally named `Twitter`, ClipNest will try a one-time safe rename to `ClipNest` on startup
 
 ## Environment Variables
 Common settings

@@ -6,6 +6,7 @@ import {
   extractFromElement,
   extractFromRoot,
   findMediaCandidates,
+  findClosestTweetUrl as findClosestTweetUrlFromLib,
   findMediaElementsForUi,
   isPixivAdElement,
   isPixivNovelElement,
@@ -15,7 +16,6 @@ import { normalizeMediaUrl } from './lib/url-normalize';
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return;
-  if (msg.type === 'XIC_INGEST_PROGRESS') return;
   if (msg.type === 'XIC_INGEST_PROGRESS') {
     if (msg.event === 'progress') {
       applyProgressEvent(msg.data);
@@ -26,6 +26,40 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       showToast(`下载失败：${errText}`, 2400);
     }
     return;
+  }
+  if (msg.type === 'XIC_EXTRACT_X_VIDEO_FOR_TWEET') {
+    (async () => {
+      const tweetUrl = typeof (msg as any)?.tweetUrl === 'string' ? String((msg as any).tweetUrl) : location.href;
+      const hintIds = Array.isArray((msg as any)?.hintIds)
+        ? (msg as any).hintIds.map((v: any) => String(v ?? '').trim()).filter(Boolean)
+        : [];
+      const tweetId = extractTweetIdFromUrl(tweetUrl) ?? extractTweetIdFromUrl(location.href);
+      if (!tweetId) {
+        sendResponse({ ok: false, error: 'missing tweet id', items: [] });
+        return;
+      }
+
+      const article = await waitForXArticleByTweetId(tweetId, 6500);
+      const root = article ?? document.documentElement;
+      const target =
+        (article?.querySelector('[data-testid="videoPlayer"]') as Element | null) ??
+        (article?.querySelector('[data-testid="tweetPhoto"]') as Element | null) ??
+        root;
+
+      const effectiveHints = Array.from(new Set([...hintIds, tweetId])).slice(0, 8);
+      let items = await tryExtractXVideoItems(target, { hintIds: effectiveHints });
+      items = items.filter((it) => it && it.mediaType === 'video' && isHttpUrl(String(it.mediaUrl ?? '')));
+
+      // If we extracted multiple videos, prefer those whose URL contains our hints.
+      const hinted = items.filter((it) => urlMatchesAnyHint(String(it.mediaUrl ?? ''), effectiveHints));
+      if (hinted.length) items = hinted;
+      if (items.length > 1) items = items.slice(0, 1);
+
+      sendResponse({ ok: true, items });
+    })().catch((e) => {
+      sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e), items: [] });
+    });
+    return true;
   }
   if (msg.type === 'XIC_EXTRACT') {
     (async () => {
@@ -103,13 +137,15 @@ function injectStyles() {
       align-items: flex-end;
     }
     .${BTN_WRAPPER_CLASS}[data-site="pixiv"],
-    .${BTN_WRAPPER_CLASS}[data-site="x"] {
+    .${BTN_WRAPPER_CLASS}[data-site="x"],
+    .${BTN_WRAPPER_CLASS}[data-site="xiaohongshu"] {
       opacity: 0;
       transform: translateY(-4px) scale(0.98);
       pointer-events: none;
     }
     .${HOST_CLASS}:hover > .${BTN_WRAPPER_CLASS}[data-site="pixiv"],
-    .${HOST_CLASS}:hover > .${BTN_WRAPPER_CLASS}[data-site="x"] {
+    .${HOST_CLASS}:hover > .${BTN_WRAPPER_CLASS}[data-site="x"],
+    .${HOST_CLASS}:hover > .${BTN_WRAPPER_CLASS}[data-site="xiaohongshu"] {
       opacity: 1;
       transform: translateY(0) scale(1);
       pointer-events: auto;
@@ -125,6 +161,12 @@ function injectStyles() {
       bottom: 6px;
       left: 6px;
       right: auto;
+    }
+    .${BTN_WRAPPER_CLASS}[data-site="xiaohongshu"][data-role="single"] {
+      top: 8px;
+      right: 8px;
+      left: auto;
+      bottom: auto;
     }
     .${BTN_WRAPPER_CLASS}[data-site="pixiv"][data-role="group"],
     .${BTN_WRAPPER_CLASS}[data-site="x"][data-role="group"] {
@@ -150,7 +192,8 @@ function injectStyles() {
       backdrop-filter: blur(6px);
     }
     .${BTN_CLASS}[data-site="pixiv"],
-    .${BTN_CLASS}[data-site="x"] {
+    .${BTN_CLASS}[data-site="x"],
+    .${BTN_CLASS}[data-site="xiaohongshu"] {
       font-size: 9px;
       padding: 3px 6px;
       border-radius: 10px;
@@ -165,19 +208,20 @@ function injectStyles() {
     }
     #${NOTE_ID} {
       position: fixed;
-      bottom: 20px;
-      right: 360px;
+      bottom: 22px;
+      right: 406px;
       z-index: 2147483647;
-      background: rgba(255, 255, 255, 0.96);
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 255, 0.94));
       color: #0f172a;
-      border: 1px solid rgba(15, 23, 42, 0.16);
-      border-radius: 12px;
-      padding: 8px 10px;
+      border: 1px solid rgba(96, 165, 250, 0.22);
+      border-radius: 14px;
+      padding: 10px 12px;
       font-size: 12px;
       font-family: system-ui, -apple-system, Segoe UI, sans-serif;
-      max-width: 260px;
-      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
-      backdrop-filter: blur(8px);
+      line-height: 1.45;
+      max-width: 280px;
+      box-shadow: 0 22px 44px rgba(15, 23, 42, 0.16);
+      backdrop-filter: blur(14px);
     }
     #${QUEUE_ID} {
       position: fixed;
@@ -194,22 +238,23 @@ function injectStyles() {
       display: none;
     }
     .${QUEUE_TOGGLE_CLASS} {
-      border: 1px solid rgba(15, 23, 42, 0.18);
-      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid rgba(96, 165, 250, 0.18);
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(242, 247, 255, 0.94));
       color: #0f172a;
       border-radius: 999px;
-      padding: 8px 12px;
+      padding: 10px 14px;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       font-size: 12px;
-      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
-      backdrop-filter: blur(8px);
+      box-shadow: 0 16px 34px rgba(15, 23, 42, 0.15);
+      backdrop-filter: blur(14px);
     }
     .${QUEUE_TOGGLE_CLASS}:hover {
-      border-color: rgba(59, 130, 246, 0.35);
-      background: linear-gradient(135deg, rgba(255,255,255,0.98), rgba(224,242,255,0.92));
+      border-color: rgba(59, 130, 246, 0.36);
+      background: linear-gradient(135deg, rgba(255,255,255,1), rgba(230,244,255,0.98));
+      transform: translateY(-1px);
     }
     .${QUEUE_TOGGLE_TEXT_CLASS} {
       font-weight: 600;
@@ -218,24 +263,26 @@ function injectStyles() {
     .${QUEUE_TOGGLE_COUNT_CLASS} {
       font-weight: 600;
       font-size: 11px;
-      padding: 2px 6px;
+      padding: 3px 7px;
       border-radius: 999px;
       color: #f8fafc;
-      background: #0f172a;
+      background: linear-gradient(135deg, #0f172a, #2563eb);
     }
     .${QUEUE_PANEL_CLASS} {
-      width: 340px;
-      background: rgba(255, 255, 255, 0.96);
+      width: 386px;
+      background:
+        radial-gradient(circle at top right, rgba(191, 219, 254, 0.45), transparent 32%),
+        linear-gradient(160deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 255, 0.94));
       color: #0f172a;
-      border: 1px solid rgba(15, 23, 42, 0.16);
-      border-radius: 16px;
-      padding: 12px 12px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 20px;
+      padding: 14px 14px 12px;
       font-size: 12px;
-      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
-      backdrop-filter: blur(10px);
+      box-shadow: 0 28px 60px rgba(15, 23, 42, 0.16);
+      backdrop-filter: blur(18px);
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 10px;
     }
     #${QUEUE_ID}[data-hidden="1"] .${QUEUE_PANEL_CLASS} {
       display: none;
@@ -253,8 +300,9 @@ function injectStyles() {
       gap: 8px;
     }
     .${QUEUE_TITLE_CLASS} {
-      font-weight: 600;
-      letter-spacing: 0.02em;
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 0.03em;
     }
     .${QUEUE_ACTIONS_CLASS} {
       display: inline-flex;
@@ -263,39 +311,44 @@ function injectStyles() {
     }
     .${QUEUE_CLEAR_CLASS},
     .${QUEUE_CLOSE_CLASS} {
-      border: 1px solid rgba(15, 23, 42, 0.16);
-      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      background: rgba(255, 255, 255, 0.88);
       color: #0f172a;
       font-size: 11px;
-      border-radius: 8px;
-      padding: 2px 8px;
+      border-radius: 999px;
+      padding: 4px 10px;
       cursor: pointer;
+      transition: border-color 140ms ease, transform 140ms ease, background 140ms ease;
     }
     .${QUEUE_CLEAR_CLASS}:hover,
     .${QUEUE_CLOSE_CLASS}:hover {
       border-color: rgba(59, 130, 246, 0.35);
       color: #1d4ed8;
+      background: rgba(239, 246, 255, 0.95);
+      transform: translateY(-1px);
     }
     .${QUEUE_SUMMARY_CLASS} {
       font-size: 11px;
-      color: rgba(15, 23, 42, 0.6);
+      color: rgba(15, 23, 42, 0.62);
+      line-height: 1.5;
     }
     .${QUEUE_LIST_CLASS} {
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      max-height: 320px;
+      gap: 10px;
+      max-height: 360px;
       overflow: auto;
       padding-right: 4px;
     }
     .${QUEUE_ITEM_CLASS} {
-      border: 1px solid rgba(15, 23, 42, 0.12);
-      border-radius: 12px;
-      padding: 8px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 16px;
+      padding: 10px 12px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      background: rgba(255, 255, 255, 0.96);
+      gap: 7px;
+      background: rgba(255, 255, 255, 0.82);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
     }
     .${QUEUE_ITEM_CLASS}[data-status="done"] {
       border-color: rgba(16, 185, 129, 0.35);
@@ -310,7 +363,7 @@ function injectStyles() {
       background: rgba(254, 242, 242, 0.95);
     }
     .${QUEUE_NAME_CLASS} {
-      font-weight: 600;
+      font-weight: 700;
       font-size: 12px;
       color: #0f172a;
       overflow: hidden;
@@ -331,17 +384,17 @@ function injectStyles() {
     .${QUEUE_BAR_CLASS} {
       position: relative;
       width: 100%;
-      height: 6px;
+      height: 7px;
       border-radius: 999px;
-      background: rgba(15, 23, 42, 0.12);
+      background: rgba(148, 163, 184, 0.18);
       overflow: hidden;
     }
     .${QUEUE_BAR_INNER_CLASS} {
       position: absolute;
       inset: 0 auto 0 0;
       width: 0%;
-      background: linear-gradient(90deg, rgba(59, 130, 246, 0.25), rgba(59, 130, 246, 0.95));
-      transition: width 0.2s ease;
+      background: linear-gradient(90deg, rgba(96, 165, 250, 0.28), rgba(37, 99, 235, 0.96));
+      transition: width 0.24s ease;
     }
     .${QUEUE_BAR_CLASS}[data-indeterminate="1"] .${QUEUE_BAR_INNER_CLASS} {
       width: 40%;
@@ -423,6 +476,28 @@ function ensureClickableChain(el: HTMLElement) {
   }
 }
 
+function rectArea(rect: DOMRect | ClientRect): number {
+  return Math.max(0, rect.width) * Math.max(0, rect.height);
+}
+
+function rectIntersectionArea(a: DOMRect | ClientRect, b: DOMRect | ClientRect): number {
+  const left = Math.max(a.left, b.left);
+  const right = Math.min(a.right, b.right);
+  const top = Math.max(a.top, b.top);
+  const bottom = Math.min(a.bottom, b.bottom);
+  const width = Math.max(0, right - left);
+  const height = Math.max(0, bottom - top);
+  return width * height;
+}
+
+function rectCenterDistance(a: DOMRect | ClientRect, b: DOMRect | ClientRect): number {
+  const ax = a.left + a.width / 2;
+  const ay = a.top + a.height / 2;
+  const bx = b.left + b.width / 2;
+  const by = b.top + b.height / 2;
+  return Math.hypot(ax - bx, ay - by);
+}
+
 function isVisibleElement(el: Element): el is HTMLElement {
   if (!(el instanceof HTMLElement)) return false;
   const style = window.getComputedStyle(el);
@@ -452,6 +527,78 @@ function pickActiveCandidate(candidates: MediaCandidate[]): MediaCandidate | nul
   return candidates[0] ?? null;
 }
 
+function isXDetailUrl(href = location.href): boolean {
+  try {
+    const u = new URL(href);
+    return u.pathname.includes('/status/') || u.pathname.includes('/i/status/');
+  } catch {
+    return href.includes('/status/') || href.includes('/i/status/');
+  }
+}
+
+function isXiaohongshuDetailUrl(href = location.href): boolean {
+  try {
+    const u = new URL(href);
+    return (
+      /^\/explore\/[^/]+/i.test(u.pathname) ||
+      /^\/discovery\/item\/[^/]+/i.test(u.pathname) ||
+      /^\/item\/[^/]+/i.test(u.pathname)
+    );
+  } catch {
+    return /\/(explore|discovery\/item|item)\//i.test(href);
+  }
+}
+
+function isXiaohongshuUiNoise(el: HTMLElement): boolean {
+  // XHS comments contain lots of small emoji/stickers rendered as <img>.
+  // We only show save UI for "real" media (usually large), so we filter by size.
+  const rect = el.getBoundingClientRect();
+  const area = rectArea(rect);
+  const maxDim = Math.max(rect.width, rect.height);
+  const minDim = Math.min(rect.width, rect.height);
+
+  // Very small items are never "main media" on XHS detail pages.
+  if (maxDim > 0 && maxDim < 92) return true;
+  if (minDim > 0 && minDim < 70) return true;
+  if (area > 0 && area < 9000) return true;
+
+  if (el instanceof HTMLImageElement) {
+    const src = el.currentSrc || el.src || '';
+    const alt = el.alt || '';
+    if (/emoji|emoticon|sticker|icon/i.test(src)) return true;
+    if (/表情|emoji/i.test(alt)) return true;
+  }
+
+  // If the image is inside a comment-like region and not large, treat as noise.
+  const commentLike = el.closest(
+    '[class*="comment" i], [class*="reply" i], [aria-label*="评论"], [aria-label*="comment" i], [data-testid*="comment" i]',
+  );
+  if (commentLike && area > 0 && area < 60000) return true;
+
+  return false;
+}
+
+function hasDirectXVideoMedia(root: Element): boolean {
+  if (root instanceof HTMLVideoElement) return true;
+  if (root instanceof HTMLElement && root.matches('[data-testid="videoPlayer"]')) return true;
+  return Boolean(
+    root.querySelector(
+      '[data-testid="videoPlayer"], video, img[src*="ext_tw_video_thumb"], img[src*="amplify_video_thumb"], img[src*="tweet_video_thumb"], img[src*="video_thumb"]',
+    ),
+  );
+}
+
+function isDirectXVideoMedia(targetEl: Element): boolean {
+  if (targetEl instanceof HTMLVideoElement) return true;
+  if (targetEl instanceof HTMLElement && targetEl.matches('[data-testid="videoPlayer"]')) return true;
+  if (targetEl.closest('[data-testid="videoPlayer"]')) return true;
+  if (targetEl instanceof HTMLImageElement) {
+    const src = targetEl.currentSrc || targetEl.src || '';
+    if (isXVideoThumbUrl(src)) return true;
+  }
+  return hasDirectXVideoMedia(targetEl);
+}
+
 function isXVideoContext(targetEl: Element): boolean {
   if (targetEl.closest('[data-testid="videoPlayer"]')) return true;
   const article = targetEl.closest('article');
@@ -466,6 +613,67 @@ function isXVideoContext(targetEl: Element): boolean {
 
 function isXVideoThumbUrl(url: string): boolean {
   return /pbs\.twimg\.com\/(?:ext_tw_video_thumb|amplify_video_thumb|tweet_video_thumb)/i.test(url);
+}
+
+function extractXVideoOwnerIdFromThumbUrl(url: string): string | null {
+  const m = String(url ?? '').match(
+    /pbs\.twimg\.com\/(?:ext_tw_video_thumb|amplify_video_thumb|tweet_video_thumb)\/(\d{8,25})\//i,
+  );
+  return m?.[1] ?? null;
+}
+
+function extractXVideoOwnerIdFromVideoUrl(url: string): string | null {
+  const m = String(url ?? '').match(/video\.twimg\.com\/(?:ext_tw_video|amplify_video|tweet_video)\/(\d{8,25})\//i);
+  return m?.[1] ?? null;
+}
+
+function pickClosestXVideoThumbId(targetEl: Element, imgs: HTMLImageElement[]): string | null {
+  if (!imgs.length) return null;
+  const targetRect = targetEl.getBoundingClientRect();
+  let bestId: string | null = null;
+  let bestScore = -Infinity;
+  for (const img of imgs) {
+    const src = img.currentSrc || img.src || '';
+    const id = extractXVideoOwnerIdFromThumbUrl(src);
+    if (!id) continue;
+    const rect = img.getBoundingClientRect();
+    const overlap = rectIntersectionArea(targetRect, rect);
+    const distance = rectCenterDistance(targetRect, rect);
+    let score = 0;
+    if (overlap > 0) score += 2000 + overlap;
+    score += Math.max(0, 1200 - distance);
+    if (img.closest('[data-testid="videoPlayer"]') === targetEl.closest('[data-testid="videoPlayer"]')) {
+      score += 900;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestId = id;
+    }
+  }
+  return bestId;
+}
+
+function findXVideoThumbOwnerId(targetEl: Element, videoEl: HTMLVideoElement | null): string | null {
+  const fromPoster = extractXVideoOwnerIdFromThumbUrl(videoEl?.poster ?? '');
+  if (fromPoster) return fromPoster;
+
+  const container = targetEl.closest('[data-testid="videoPlayer"]') ?? targetEl;
+  const imgs = Array.from(container.querySelectorAll<HTMLImageElement>('img[src]'));
+  const containerId = pickClosestXVideoThumbId(targetEl, imgs);
+  if (containerId) return containerId;
+
+  const article = targetEl.closest('article');
+  if (article) {
+    const imgs2 = Array.from(
+      article.querySelectorAll<HTMLImageElement>(
+        'img[src*="ext_tw_video_thumb"], img[src*="amplify_video_thumb"], img[src*="tweet_video_thumb"], img[src*="video_thumb"]',
+      ),
+    );
+    const articleId = pickClosestXVideoThumbId(targetEl, imgs2);
+    if (articleId) return articleId;
+  }
+
+  return null;
 }
 
 function containsOnlyXVideoThumb(items: { mediaType?: string; mediaUrl?: string }[]): boolean {
@@ -556,14 +764,7 @@ function showToast(text: string, timeoutMs = 1600) {
   }
 }
 
-const TASK_CREATED_TEXT = '\u5df2\u5efa\u7acb\u4efb\u52a1';
-
-function fireAndForgetIngest(items: IngestItem[]) {
-  if (!items.length) return;
-  void chrome.runtime.sendMessage({ type: 'XIC_INGEST_ITEMS_STREAM', items }).catch((err) => {
-    logDebug('ingest send failed', err);
-  });
-}
+const TASK_CREATED_TEXT = '已加入保存队列';
 
 type QueueStatus = 'queued' | 'downloading' | 'done' | 'exists' | 'failed';
 
@@ -595,97 +796,6 @@ let cachedServerUrl = DEFAULT_SERVER_URL;
 let cachedServerCheckedAt = 0;
 let progressPollTimer: number | null = null;
 
-function ensureQueueRootLegacy() {
-  let root = document.getElementById(QUEUE_ID) as HTMLDivElement | null;
-  if (!root) {
-    root = document.createElement('div');
-    root.id = QUEUE_ID;
-    if (false) {
-    const toggle = document.createElement('button');
-    toggle.className = QUEUE_TOGGLE_CLASS;
-    toggle.type = 'button';
-    const toggleText = document.createElement('span');
-    toggleText.className = QUEUE_TOGGLE_TEXT_CLASS;
-    toggleText.textContent = '下载队列';
-    const toggleCount = document.createElement('span');
-    toggleCount.className = QUEUE_TOGGLE_COUNT_CLASS;
-    toggleCount.textContent = '0';
-    toggle.appendChild(toggleText);
-    toggle.appendChild(toggleCount);
-    toggle.addEventListener('click', () => {
-      queueHidden = false;
-      scheduleRenderQueue();
-    });
-
-    const panel = document.createElement('div');
-    panel.className = QUEUE_PANEL_CLASS;
-    }
-    const toggle = document.createElement('button');
-    toggle.className = QUEUE_TOGGLE_CLASS;
-    toggle.type = 'button';
-    const toggleText = document.createElement('span');
-    toggleText.className = QUEUE_TOGGLE_TEXT_CLASS;
-    toggleText.textContent = '下载队列';
-    const toggleCount = document.createElement('span');
-    toggleCount.className = QUEUE_TOGGLE_COUNT_CLASS;
-    toggleCount.textContent = '0';
-    toggle.appendChild(toggleText);
-    toggle.appendChild(toggleCount);
-    toggle.addEventListener('click', () => {
-      queueHidden = false;
-      scheduleRenderQueue();
-    });
-
-    const panel = document.createElement('div');
-    panel.className = QUEUE_PANEL_CLASS;
-    const header = document.createElement('div');
-    header.className = QUEUE_HEADER_CLASS;
-    const title = document.createElement('div');
-    title.className = QUEUE_TITLE_CLASS;
-    title.textContent = '下载队列';
-    const close = document.createElement('button');
-    close.className = QUEUE_CLOSE_CLASS;
-    close.type = 'button';
-    close.textContent = '隐藏';
-    close.addEventListener('click', () => {
-      queueHidden = true;
-      scheduleRenderQueue();
-    });
-    header.appendChild(title);
-    header.appendChild(close);
-    title.textContent = '下载队列';
-    close.textContent = '收起';
-    const actions = document.createElement('div');
-    actions.className = QUEUE_ACTIONS_CLASS;
-    const clear = document.createElement('button');
-    clear.className = QUEUE_CLEAR_CLASS;
-    clear.type = 'button';
-    clear.textContent = '清空';
-    clear.addEventListener('click', () => {
-      clearQueueItems();
-    });
-    actions.appendChild(clear);
-    actions.appendChild(close);
-    header.appendChild(actions);
-
-    const summary = document.createElement('div');
-    summary.className = QUEUE_SUMMARY_CLASS;
-
-    const list = document.createElement('div');
-    list.className = QUEUE_LIST_CLASS;
-
-    root.appendChild(header);
-    root.appendChild(list);
-    panel.appendChild(header);
-    panel.appendChild(summary);
-    panel.appendChild(list);
-    root.appendChild(toggle);
-    root.appendChild(panel);
-    document.body.appendChild(root);
-  }
-  return root;
-}
-
 function ensureQueueRoot() {
   let root = document.getElementById(QUEUE_ID) as HTMLDivElement | null;
   if (root) {
@@ -706,7 +816,7 @@ function ensureQueueRoot() {
     toggle.type = 'button';
     const toggleText = document.createElement('span');
     toggleText.className = QUEUE_TOGGLE_TEXT_CLASS;
-    toggleText.textContent = '下载队列';
+    toggleText.textContent = '保存管理';
     const toggleCount = document.createElement('span');
     toggleCount.className = QUEUE_TOGGLE_COUNT_CLASS;
     toggleCount.textContent = '0';
@@ -725,7 +835,7 @@ function ensureQueueRoot() {
 
     const title = document.createElement('div');
     title.className = QUEUE_TITLE_CLASS;
-    title.textContent = '下载队列';
+    title.textContent = '保存管理';
 
     const actions = document.createElement('div');
     actions.className = QUEUE_ACTIONS_CLASS;
@@ -733,7 +843,7 @@ function ensureQueueRoot() {
     const clear = document.createElement('button');
     clear.className = QUEUE_CLEAR_CLASS;
     clear.type = 'button';
-    clear.textContent = '清空';
+    clear.textContent = '清空记录';
     clear.addEventListener('click', () => {
       clearQueueItems();
     });
@@ -931,6 +1041,70 @@ function filterProgressEntries(entries: any[], activeIds: string[]) {
   });
 }
 
+type ProgressSnapshot = {
+  key: string;
+  clientId: string;
+  stage: string;
+  ts?: number;
+  data: any;
+};
+
+function getProgressSnapshot(entry: any, index: number): ProgressSnapshot | null {
+  const data = entry?.data ?? entry;
+  if (!data) return null;
+  const clientId = getProgressEntryClientId(entry);
+  const stage = getProgressEntryStage(entry);
+  const ts = getProgressEntryTs(entry);
+  const fallbackKeyParts = [
+    stage,
+    typeof data?.usedUrl === 'string' ? data.usedUrl : '',
+    typeof data?.url === 'string' ? data.url : '',
+    typeof data?.displayName === 'string' ? data.displayName : '',
+    String(index),
+  ];
+  const key = clientId || fallbackKeyParts.join('|');
+  return { key, clientId, stage, ts, data };
+}
+
+function getProgressDetailScore(snapshot: ProgressSnapshot) {
+  const data = snapshot.data ?? {};
+  let score = 0;
+  if (Number.isFinite(data?.bytes)) score += 2;
+  if (Number.isFinite(data?.total)) score += 2;
+  if (typeof data?.usedUrl === 'string' && data.usedUrl.trim()) score += 1;
+  if (typeof data?.error === 'string' && data.error.trim()) score += 1;
+  return score;
+}
+
+function pickBetterSnapshot(current: ProgressSnapshot | undefined, next: ProgressSnapshot) {
+  if (!current) return next;
+  const currentTs = current.ts ?? -1;
+  const nextTs = next.ts ?? -1;
+  if (nextTs > currentTs) return next;
+  if (nextTs < currentTs) return current;
+  const currentRank = stageRank(current.stage);
+  const nextRank = stageRank(next.stage);
+  if (nextRank > currentRank) return next;
+  if (nextRank < currentRank) return current;
+  return getProgressDetailScore(next) >= getProgressDetailScore(current) ? next : current;
+}
+
+function mergeProgressEntries(...groups: any[][]) {
+  const merged = new Map<string, ProgressSnapshot>();
+  let index = 0;
+  for (const entries of groups) {
+    for (const entry of entries) {
+      const snapshot = getProgressSnapshot(entry, index);
+      index += 1;
+      if (!snapshot) continue;
+      if (!snapshot.clientId && !snapshot.data?.url && !snapshot.data?.displayName) continue;
+      const current = merged.get(snapshot.key);
+      merged.set(snapshot.key, pickBetterSnapshot(current, snapshot));
+    }
+  }
+  return Array.from(merged.values());
+}
+
 async function fetchServerProgress(clientIds?: string[]) {
   try {
     const r = await chrome.runtime.sendMessage({ type: 'XIC_GET_SERVER_PROGRESS', clientIds });
@@ -980,17 +1154,10 @@ async function pollProgressOnce() {
   if (serverItems.length) {
     serverItems = filterProgressEntries(serverItems, activeIds);
   }
-  const merged = [...items, ...serverItems];
-  const seen = new Set<string>();
+  const merged = mergeProgressEntries(items, serverItems);
   for (const entry of merged) {
-    if (!isFreshProgressEntry(entry)) continue;
-    const data = entry?.data ?? entry;
-    const clientId = typeof data?.clientId === 'string' ? data.clientId : typeof entry?.clientId === 'string' ? entry.clientId : '';
-    if (clientId) {
-      if (seen.has(clientId)) continue;
-      seen.add(clientId);
-    }
-    if (data) applyProgressEvent(data);
+    if (entry.ts !== undefined && !isFreshProgressEntry({ data: { ...entry.data, ts: entry.ts } })) continue;
+    if (entry.data) applyProgressEvent(entry.data);
   }
 }
 
@@ -1129,42 +1296,33 @@ function findQueueItemIdByName(name?: string) {
   return match;
 }
 
-function statusLabelLegacy(item: QueueItem) {
-  if (item.status === 'failed') {
-    return item.error ? `失败：${item.error}` : '失败';
-  }
-  if (item.status === 'exists') return '已存在';
-  if (item.status === 'done') return '已保存';
-  if (item.stage === 'downloaded') return '处理中';
-  if (item.status === 'downloading') return '下载中';
-  return '排队中';
-}
-
-function statusLabelDisplayLegacy(item: QueueItem) {
-  if (item.status === 'failed') {
-    return item.error ? `失败：${item.error}` : '失败';
-  }
-  if (item.status === 'exists') return '已存在';
-  if (item.status === 'done') return '已保存';
-  if (item.stage === 'downloaded') return '处理中';
-  if (item.status === 'downloading') return '下载中';
-  return '排队中';
-}
-
-function statusLabelDisplay(item: QueueItem) {
-  if (item.status === 'failed') {
-    const reason = item.error ? `：${item.error}` : '';
-    return `失败${reason}`;
-  }
-  if (item.status === 'exists') return '已存在';
-  if (item.status === 'done') return '已保存';
-  if (item.stage === 'downloaded') return '处理中';
-  if (item.status === 'downloading') return '下载中';
-  return '排队中';
-}
-
 function statusLabel(item: QueueItem) {
-  return statusLabelDisplay(item);
+  if (item.status === 'failed') {
+    return item.error ? `失败：${item.error}` : '失败';
+  }
+  if (item.status === 'exists') return '已存在';
+  if (item.status === 'done') return '已保存';
+  if (item.stage === 'downloaded') return '处理中';
+  if (item.status === 'downloading') return '下载中';
+  return '排队中';
+}
+
+function getQueuePercent(item: QueueItem) {
+  if (!Number.isFinite(item.total) || !Number.isFinite(item.bytes)) return null;
+  const total = Number(item.total);
+  const bytes = Number(item.bytes);
+  if (total <= 0) return null;
+  return Math.min(100, Math.floor((bytes / total) * 100));
+}
+
+function getQueueSizeText(item: QueueItem) {
+  const bytes = formatBytes(item.bytes);
+  const total = formatBytes(item.total);
+  if (total) return `${bytes || '0 B'} / ${total}`;
+  if (bytes) return `已下载 ${bytes}`;
+  if (item.status === 'queued') return '等待下载';
+  if (item.stage === 'downloaded') return '准备写入图库';
+  return '';
 }
 
 function renderQueue() {
@@ -1203,16 +1361,10 @@ function renderQueue() {
     summary.textContent = `进行中 ${active} · 已完成 ${completed} · 失败 ${failed}`;
   }
   if (toggleText) {
-    toggleText.textContent = active > 0 ? `下载队列 · 进行中 ${active}` : '下载队列';
+    toggleText.textContent = active > 0 ? `保存管理 · ${active} 项进行中` : '保存管理';
   }
   if (toggleCount) {
     toggleCount.textContent = String(totalCount);
-  }
-  if (summary) {
-    summary.textContent = `进行中 ${active} · 已完成 ${completed} · 失败 ${failed}`;
-  }
-  if (toggleText) {
-    toggleText.textContent = active > 0 ? `下载队列 · 进行中 ${active}` : '下载队列';
   }
 
   if (!list) return;
@@ -1224,27 +1376,29 @@ function renderQueue() {
 
     const name = document.createElement('div');
     name.className = QUEUE_NAME_CLASS;
-    name.textContent = item.displayName || 'media';
+    const mediaPrefix = item.mediaType === 'video' ? '视频' : item.mediaType === 'image' ? '图片' : '媒体';
+    name.textContent = `${mediaPrefix} · ${item.displayName || 'media'}`;
     row.appendChild(name);
 
     const meta = document.createElement('div');
     meta.className = QUEUE_META_CLASS;
+
     const status = document.createElement('div');
     status.className = QUEUE_STATUS_CLASS;
-    const bytes = formatBytes(item.bytes);
-    const total = formatBytes(item.total);
-    const sizeText = total ? `${bytes || '0 B'} / ${total}` : bytes;
-    status.textContent = sizeText ? `${statusLabel(item)} · ${sizeText}` : statusLabel(item);
-    const percent = document.createElement('div');
-    const label = statusLabelDisplay(item);
+    const sizeText = getQueueSizeText(item);
+    const label = statusLabel(item);
     status.textContent = sizeText ? `${label} · ${sizeText}` : label;
-    if (Number.isFinite(item.total) && (item.total ?? 0) > 0 && Number.isFinite(item.bytes)) {
-      const pct = Math.min(100, Math.floor(((item.bytes ?? 0) / (item.total ?? 1)) * 100));
+
+    const percent = document.createElement('div');
+    const pct = getQueuePercent(item);
+    if (pct !== null) {
       percent.textContent = `${pct}%`;
+    } else if (item.status === 'downloading') {
+      percent.textContent = '传输中';
     } else {
       percent.textContent = '';
     }
-    status.textContent = sizeText ? `${label} · ${sizeText}` : label;
+
     meta.appendChild(status);
     meta.appendChild(percent);
     row.appendChild(meta);
@@ -1253,11 +1407,9 @@ function renderQueue() {
     bar.className = QUEUE_BAR_CLASS;
     const inner = document.createElement('div');
     inner.className = QUEUE_BAR_INNER_CLASS;
-    const hasTotal = Number.isFinite(item.total) && (item.total ?? 0) > 0 && Number.isFinite(item.bytes);
-    if (hasTotal) {
-      const pct = Math.min(100, Math.floor(((item.bytes ?? 0) / (item.total ?? 1)) * 100));
+    if (pct !== null) {
       inner.style.width = `${pct}%`;
-    } else if (item.status === 'downloading') {
+    } else if (item.status === 'downloading' || item.stage === 'downloaded') {
       bar.setAttribute('data-indeterminate', '1');
     } else {
       inner.style.width = item.status === 'done' || item.status === 'exists' ? '100%' : '0%';
@@ -1345,6 +1497,11 @@ function applyProgressEvent(payload: any) {
   item.stage = stage;
   item.bytes = bytes ?? item.bytes;
   item.total = total ?? item.total;
+  if ((stage === 'created' || stage === 'exists') && Number.isFinite(item.total) && Number.isFinite(item.bytes)) {
+    item.bytes = Math.max(Number(item.bytes), Number(item.total));
+  } else if ((stage === 'created' || stage === 'exists') && !Number.isFinite(item.total) && Number.isFinite(item.bytes)) {
+    item.total = Number(item.bytes);
+  }
   item.mediaType = payload?.mediaType ?? item.mediaType;
   item.url = typeof payload?.url === 'string' ? payload.url : item.url;
   item.usedUrl = typeof payload?.usedUrl === 'string' ? payload.usedUrl : item.usedUrl;
@@ -1453,8 +1610,17 @@ function startIngestViaPort(port: chrome.runtime.Port | null, items: IngestItem[
 async function handleSaveClick(btn: HTMLButtonElement, targetEl: Element, mode: SaveMode) {
   if (btn.dataset.busy === '1') return;
   btn.dataset.busy = '1';
-  const port: chrome.runtime.Port | null = null;
+  const currentText = btn.textContent ?? '保存';
+  if (btn.dataset.xicPreviewVideoBlocked === '1') {
+    btn.textContent = '请进详情';
+    showToast('外部预览视频暂不支持直接保存，请打开帖子详情后保存', 2200);
+    await sleep(700);
+    btn.textContent = currentText;
+    btn.dataset.busy = '0';
+    return;
+  }
   const originalText = btn.textContent ?? '保存';
+  let preparedClientIds: string[] = [];
   btn.textContent = '加入队列...';
   try {
     const siteId = detectSite(location.href);
@@ -1478,6 +1644,7 @@ async function handleSaveClick(btn: HTMLButtonElement, targetEl: Element, mode: 
         }
       }
     }
+
     let items =
       pixivBuiltItems ??
       (mode === 'group'
@@ -1487,6 +1654,14 @@ async function handleSaveClick(btn: HTMLButtonElement, targetEl: Element, mode: 
           : extractFromElement(targetEl, location.href).items);
 
     let preferVideo = false;
+    const onXDetailPage = (() => {
+      try {
+        const u = new URL(location.href);
+        return u.pathname.includes('/status/') || u.pathname.includes('/i/status/');
+      } catch {
+        return location.href.includes('/status/') || location.href.includes('/i/status/');
+      }
+    })();
     if (siteId === 'x') {
       const onlyVideoThumb = containsOnlyXVideoThumb(items);
       preferVideo = isXVideoContext(targetEl) || onlyVideoThumb;
@@ -1495,7 +1670,7 @@ async function handleSaveClick(btn: HTMLButtonElement, targetEl: Element, mode: 
         if (videoItems.length) {
           items = videoItems;
         } else if (onlyVideoThumb) {
-          showToast('未检测到视频，请打开详情播放后再保存', 2000);
+          showToast(onXDetailPage ? '未检测到视频，请先播放后再保存' : '外部预览视频暂不稳定，请打开帖子详情后保存', 2200);
           btn.textContent = '未检测到视频';
           await sleep(600);
           btn.textContent = originalText;
@@ -1508,17 +1683,27 @@ async function handleSaveClick(btn: HTMLButtonElement, targetEl: Element, mode: 
         }
       }
     }
+
     if (
       siteId === 'x' &&
       items.length > 0 &&
       items.every((item) => item.mediaType === 'image' && isXVideoThumbUrl(String(item.mediaUrl ?? '')))
     ) {
-      showToast('未检测到视频，请打开详情播放后再保存', 2000);
+      showToast(onXDetailPage ? '未检测到视频，请先播放后再保存' : '外部预览视频暂不稳定，请打开帖子详情后保存', 2200);
       btn.textContent = '未检测到视频';
       await sleep(600);
       btn.textContent = originalText;
       return;
     }
+
+    if (siteId === 'x' && preferVideo && !items.length) {
+      showToast(onXDetailPage ? '未检测到视频，请先播放后再保存' : '外部预览视频暂不稳定，请打开帖子详情后保存', 2200);
+      btn.textContent = '未检测到视频';
+      await sleep(600);
+      btn.textContent = originalText;
+      return;
+    }
+
     items = items.filter((item) => isHttpUrl(String(item.mediaUrl ?? '')));
     if (!items.length) {
       showToast('未检测到媒体', 1400);
@@ -1527,77 +1712,46 @@ async function handleSaveClick(btn: HTMLButtonElement, targetEl: Element, mode: 
       btn.textContent = originalText;
       return;
     }
+
     items = await enrichItemsViaBackground(items);
-    fireAndForgetIngest(items);
-    showToast(TASK_CREATED_TEXT, 1400);
-    await sleep(400);
-    return;
     const prepared = prepareQueueItems(items);
-    registerPortIds(port, prepared.clientIds);
+    preparedClientIds = prepared.clientIds;
+    queueHidden = false;
+    scheduleRenderQueue();
+    ensureProgressPolling();
+
     logDebug('ingest items', prepared.items);
-    let r: any = { ok: true, queued: prepared.items.length };
-    const startedViaPort = startIngestViaPort(port, prepared.items);
-    if (!startedViaPort) {
-      // direct stream handles progress; background fallback handled in catch below
-      void ingestStreamDirect(prepared.items, prepared.clientIds).catch(async (err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        logDebug('ingest stream failed', err);
-        const progressed = prepared.clientIds.some((id) => {
-          const item = queueItems.get(id);
-          return item && item.stage && item.stage !== 'queued';
+    const ingestPort = openIngestPort();
+    registerPortIds(ingestPort, prepared.clientIds);
+    const r = startIngestViaPort(ingestPort, prepared.items)
+      ? { ok: true, count: prepared.items.length, queued: prepared.items.length }
+      : await chrome.runtime.sendMessage({
+          type: 'XIC_INGEST_ITEMS_STREAM',
+          items: prepared.items,
         });
-        const shouldFallback = !progressed && /failed to fetch|network|cors|fetch/i.test(message);
-        if (shouldFallback) {
-          try {
-            const fallback = await chrome.runtime.sendMessage({
-              type: 'XIC_INGEST_ITEMS_STREAM',
-              items: prepared.items,
-            });
-            if (fallback?.ok) {
-              showToast('已切换为后台下载', 1800);
-              return;
-            }
-          } catch (fallbackErr) {
-            logDebug('ingest stream fallback failed', fallbackErr);
-          }
-        }
-        showToast(`下载失败：${message}`, 2400);
-        markQueueFailed(prepared.clientIds, message);
-      });
-    }
+
     if (!r?.ok) {
-      void ingestStreamDirect(prepared.items, prepared.clientIds).catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        logDebug('ingest stream failed', err);
-        showToast(`失败：${message}`, 2400);
-        markQueueFailed(prepared.clientIds, message);
-      });
-      r = { ok: true, queued: prepared.items.length };
-    }
-    if (r?.ok) {
-      const queued = Number.isFinite(r?.queued) ? r.queued : prepared.items.length;
-      btn.textContent = queued > 0 ? `已加入 ${queued}` : '已加入';
-      showToast(queued > 0 ? `已加入队列 ${queued}` : '已加入队列', 1400);
-      await sleep(600);
-    } else {
-      logDebug('ingest failed', r);
+      const message = String(r?.error ?? '未知错误');
+      markQueueFailed(prepared.clientIds, message);
       btn.textContent = '失败';
-      showToast(`失败：${r?.error ?? '未知错误'}`, 2400);
-      markQueueFailed(prepared.clientIds, String(r?.error ?? '未知错误'));
+      showToast(`保存失败：${message}`, 2400);
       await sleep(600);
+      return;
     }
+
+    const queued = Number.isFinite(r?.queued) ? Number(r.queued) : prepared.items.length;
+    btn.textContent = queued > 1 ? `已加入 ${queued}` : '已加入';
+    showToast(queued > 1 ? `已加入保存队列，共 ${queued} 项` : TASK_CREATED_TEXT, 1800);
+    await sleep(500);
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
     logDebug('ingest error', e);
-    btn.textContent = '错误';
-    showToast('发送请求失败', 2400);
-    await sleep(600);
-    if (port) {
-      try {
-        port.disconnect();
-      } catch {
-        // ignore
-      }
+    if (preparedClientIds.length) {
+      markQueueFailed(preparedClientIds, message);
     }
+    btn.textContent = '错误';
+    showToast(`发送请求失败：${message}`, 2400);
+    await sleep(600);
   } finally {
     btn.textContent = originalText;
     btn.dataset.busy = '0';
@@ -2055,11 +2209,161 @@ function findXVideoUrlFromMeta(): string | null {
   return pickBestXVideoUrl(urls);
 }
 
-async function tryExtractXVideoItems(targetEl: Element) {
+function extractTweetIdFromUrl(value?: string | null): string | null {
+  if (!value) return null;
+  try {
+    const u = new URL(value);
+    const match = u.pathname.match(/\/status\/(\d+)/i) ?? u.pathname.match(/\/i\/status\/(\d+)/i);
+    return match?.[1] ?? null;
+  } catch {
+    const match = String(value).match(/\/status\/(\d+)/i) ?? String(value).match(/\/i\/status\/(\d+)/i);
+    return match?.[1] ?? null;
+  }
+}
+
+function urlMatchesAnyHint(url: string, hintIds: string[]): boolean {
+  const u = String(url ?? '');
+  if (!u) return false;
+  for (const id of hintIds) {
+    const t = String(id ?? '').trim();
+    if (!t) continue;
+    if (u.includes(t)) return true;
+  }
+  return false;
+}
+
+function findXArticleByTweetId(tweetId: string): HTMLElement | null {
+  if (!tweetId) return null;
+  const selector = `a[href*="/status/${tweetId}"], a[href*="/i/status/${tweetId}"]`;
+  const anchors = Array.from(document.querySelectorAll<HTMLAnchorElement>(selector));
+  const scored = anchors
+    .map((a) => {
+      const href = a.getAttribute('href') ?? '';
+      const hasTime = a.querySelector('time') ? 1 : 0;
+      const isExact = href.includes(`/status/${tweetId}`) || href.includes(`/i/status/${tweetId}`) ? 1 : 0;
+      const score = hasTime * 10 + isExact * 4;
+      return { a, score };
+    })
+    .sort((x, y) => y.score - x.score);
+  for (const { a } of scored) {
+    const article = a.closest('article');
+    if (article instanceof HTMLElement) return article;
+  }
+  return null;
+}
+
+async function waitForXArticleByTweetId(tweetId: string, timeoutMs: number): Promise<HTMLElement | null> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const article = findXArticleByTweetId(tweetId);
+    if (article) return article;
+    await sleep(250);
+  }
+  return null;
+}
+
+type XVideoExtractOpts = {
+  hintIds?: string[];
+};
+
+async function tryExtractXVideoItems(targetEl: Element, opts?: XVideoExtractOpts) {
   const videoEl = findNearestVideo(targetEl);
   if (videoEl) {
     await ensureVideoReady(videoEl);
   }
+
+  const explicitHintIds = Array.isArray(opts?.hintIds)
+    ? opts!.hintIds!.map((v) => String(v ?? '').trim()).filter(Boolean)
+    : [];
+  const thumbOwnerId = findXVideoThumbOwnerId(targetEl, videoEl);
+
+  const isTweetDetail = () => {
+    try {
+      const u = new URL(location.href);
+      return u.pathname.includes('/status/') || u.pathname.includes('/i/status/');
+    } catch {
+      return location.href.includes('/status/') || location.href.includes('/i/status/');
+    }
+  };
+
+  const toPreferredXVideoDetailUrl = (rawTweetUrl?: string): string | undefined => {
+    if (!rawTweetUrl) return undefined;
+    try {
+      const url = new URL(rawTweetUrl);
+      const base = url.pathname.match(/^(\/[^/]+\/status\/\d+|\/i\/status\/\d+)/i)?.[1];
+      if (!base) return url.toString();
+      url.hash = '';
+      if (/\/video\/\d+$/i.test(url.pathname)) return url.toString();
+      if (isXVideoContext(targetEl)) {
+        url.pathname = `${base}/video/1`;
+      } else {
+        url.pathname = base;
+      }
+      return url.toString();
+    } catch {
+      return rawTweetUrl;
+    }
+  };
+
+  const tryExtractViaTweetDetail = async (): Promise<IngestItem[]> => {
+    const origin = (() => {
+      try {
+        return new URL(location.href).origin;
+      } catch {
+        return 'https://x.com';
+      }
+    })();
+
+    const domTweetUrl = findClosestTweetUrlFromLib(targetEl, location.href);
+    const domTweetId = extractTweetIdFromUrl(domTweetUrl) ?? extractTweetIdFromUrl(location.href);
+
+    const tweetIdCandidates = Array.from(
+      new Set([thumbOwnerId, domTweetId, ...explicitHintIds.map((h) => (h && /^\d{8,25}$/.test(h) ? h : ''))].filter(Boolean)),
+    ).slice(0, 3);
+
+    const urlCandidates: string[] = [];
+    for (const tid of tweetIdCandidates) urlCandidates.push(`${origin}/i/status/${tid}`);
+    if (domTweetUrl) urlCandidates.push(domTweetUrl);
+
+    for (const baseUrl of urlCandidates) {
+      const tweetUrl = toPreferredXVideoDetailUrl(baseUrl);
+      if (!tweetUrl) continue;
+      const hintIds = Array.from(
+        new Set(
+          [
+            extractTweetIdFromUrl(tweetUrl),
+            extractTweetIdFromUrl(location.href),
+            thumbOwnerId,
+            domTweetId,
+            ...explicitHintIds,
+          ]
+            .map((v) => String(v ?? '').trim())
+            .filter(Boolean),
+        ),
+      ).slice(0, 8);
+      try {
+        const r = await chrome.runtime.sendMessage({ type: 'XIC_EXTRACT_X_VIDEO_FROM_TWEET', tweetUrl, hintIds });
+        if (r?.ok && Array.isArray(r.items)) {
+          const items = (r.items as any[]).filter((it) => it && typeof it === 'object') as IngestItem[];
+          const videoItems = items.filter((it) => it.mediaType === 'video' && isHttpUrl(String(it.mediaUrl ?? '')));
+          if (!videoItems.length) continue;
+          if (thumbOwnerId) {
+            const matched = videoItems.filter((it) => String(it.mediaUrl ?? '').includes(thumbOwnerId));
+            if (matched.length) return matched;
+          }
+          return videoItems;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      // ignore
+    } catch {
+      // ignore
+    }
+    return [];
+  };
 
   const collectOnce = async () => {
     const perfStart = performance.now();
@@ -2093,15 +2397,20 @@ async function tryExtractXVideoItems(targetEl: Element) {
     const perfUrl = findXVideoUrlFromPerformance(perfStart);
     if (perfUrl) urls.push(perfUrl);
 
+    // Using tab-level "recent video urls" is noisy on timelines (it can include other tweets' videos).
+    // Only use it on detail pages, or when we already have some reliable local hints (thumbOwnerId counts).
     let bgUrls: string[] = [];
-    try {
-      const r = await chrome.runtime.sendMessage({ type: 'XIC_GET_RECENT_VIDEO_URLS' });
-      if (r?.ok && Array.isArray(r.urls)) {
-        bgUrls = r.urls.filter((u: any) => typeof u === 'string');
-        if (bgUrls.length) urls.push(...bgUrls);
+    const hasLocalHint = fromVideoEl.length > 0 || contextUrls.length > 0 || scriptUrls.length > 0 || !!metaUrl || !!perfUrl;
+    if (isTweetDetail() || hasLocalHint || !!thumbOwnerId || explicitHintIds.length > 0) {
+      try {
+        const r = await chrome.runtime.sendMessage({ type: 'XIC_GET_RECENT_VIDEO_URLS' });
+        if (r?.ok && Array.isArray(r.urls)) {
+          bgUrls = r.urls.filter((u: any) => typeof u === 'string');
+          if (bgUrls.length) urls.push(...bgUrls);
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
 
     const audioUrls = urls.filter((u) => isXAudioUrl(u));
@@ -2130,8 +2439,47 @@ async function tryExtractXVideoItems(targetEl: Element) {
     await sleep(600);
     ranked = await collectOnce();
   }
+
+  // Prefer filtering by the clicked video's thumb owner id when available (stronger than "tweet url" heuristics).
+  if (thumbOwnerId) {
+    const hinted = ranked.filter((u) => u.includes(thumbOwnerId));
+    if (hinted.length) ranked = hinted;
+  } else if (explicitHintIds.length) {
+    const hinted = ranked.filter((u) => urlMatchesAnyHint(u, explicitHintIds));
+    if (hinted.length) ranked = hinted;
+  }
+
+  const urlOwnerId = ranked.map(extractXVideoOwnerIdFromVideoUrl).find(Boolean) ?? null;
+
+  // On non-detail pages: first try a safe local pick (only when we can strongly associate URLs),
+  // otherwise fall back to tweet-detail extraction; avoid "noisy" best-guess picks to prevent mismatches.
+  if (!isTweetDetail()) {
+    if (thumbOwnerId) {
+      const safe = ranked.filter((u) => u.includes(thumbOwnerId));
+      if (safe.length) {
+        const best = safe.find((u) => !isXAudioUrl(u)) ?? safe[0]!;
+        const rest = safe.filter((u) => u !== best);
+        const manual = buildManualXVideoItem(best, videoEl ?? targetEl, rest);
+        return manual ? [manual] : [];
+      }
+    }
+    if (urlOwnerId) {
+      const safe = ranked.filter((u) => u.includes(urlOwnerId));
+      if (safe.length) {
+        const best = safe.find((u) => !isXAudioUrl(u)) ?? safe[0]!;
+        const rest = safe.filter((u) => u !== best);
+        const manual = buildManualXVideoItem(best, videoEl ?? targetEl, rest);
+        return manual ? [manual] : [];
+      }
+    }
+    const viaDetail = await tryExtractViaTweetDetail();
+    if (viaDetail.length) return viaDetail;
+    return [];
+  }
+
   if (ranked.length) {
-    const manual = buildManualXVideoItem(ranked[0], videoEl ?? targetEl, ranked.slice(1));
+    const best = ranked.find((u) => !isXAudioUrl(u)) ?? ranked[0]!;
+    const manual = buildManualXVideoItem(best, videoEl ?? targetEl, ranked.filter((u) => u !== best));
     return manual ? [manual] : [];
   }
   return [];
@@ -2189,7 +2537,7 @@ async function ensureVideoReady(videoEl: HTMLVideoElement) {
 }
 
 function buildManualXVideoItem(mediaUrl: string, el: Element, alternates?: string[]) {
-  const tweetUrl = findClosestTweetUrl(el, location.href);
+  const tweetUrl = findClosestTweetUrlFromLib(el, location.href);
   const authorHandle = extractHandleFromTweetUrl(tweetUrl);
   const collectedAt = new Date().toISOString();
   const pageTitle = document.title || undefined;
@@ -2207,20 +2555,6 @@ function buildManualXVideoItem(mediaUrl: string, el: Element, alternates?: strin
       alternateMediaUrls: alternates?.filter((u) => u && u !== mediaUrl).slice(0, 6) ?? [],
     },
   };
-}
-
-function findClosestTweetUrl(el: Element, locHref: string): string | undefined {
-  const article = el.closest('article');
-  if (!article) return undefined;
-  const a = article.querySelector<HTMLAnchorElement>('a[href*="/status/"]');
-  const href = a?.getAttribute('href');
-  if (!href) return undefined;
-  try {
-    const page = new URL(locHref);
-    return new URL(href, page.origin).toString();
-  } catch {
-    return undefined;
-  }
 }
 
 function extractHandleFromTweetUrl(tweetUrl?: string): string | undefined {
@@ -2277,7 +2611,7 @@ function addPixivGroupControls(groupRoot: HTMLElement) {
   const wrap = createWrap('group');
   wrap.dataset.site = 'pixiv';
   wrap.dataset.role = 'group';
-  const groupBtn = createButton('保存全部', '保存该作品中的所有图片');
+  const groupBtn = createButton('保存全部', '保存这个作品中的全部图片');
   groupBtn.dataset.site = 'pixiv';
   bindButton(groupBtn, groupRoot, 'group');
   wrap.appendChild(groupBtn);
@@ -2290,15 +2624,25 @@ function addGroupButton(groupRoot: HTMLElement, hostOverride?: HTMLElement | nul
   groupRoot.setAttribute(GROUP_BOUND_ATTR, '1');
 
   const host = hostOverride ?? groupRoot;
+  const siteId = detectSite(location.href);
+  const isBlockedXPreviewVideo = siteId === 'x' && !isXDetailUrl() && hasDirectXVideoMedia(groupRoot);
   host.classList.add(HOST_CLASS);
   ensureRelative(host);
   ensureClickableChain(host);
 
   const wrap = createWrap('group');
-  wrap.dataset.site = detectSite(location.href);
+  wrap.dataset.site = siteId;
   wrap.dataset.role = 'group';
-  const btn = createButton('保存全部', '保存该组内全部媒体');
-  btn.dataset.site = detectSite(location.href);
+  const btn = createButton('保存全部', '保存这组中的全部媒体');
+  btn.dataset.site = siteId;
+  if (isBlockedXPreviewVideo) {
+    btn.textContent = '详情后保存';
+    btn.title = '外部预览视频请打开详情页后保存';
+    btn.dataset.xicPreviewVideoBlocked = '1';
+  } else {
+    btn.textContent = '保存全部';
+    btn.title = '保存这组中的全部媒体';
+  }
   bindButton(btn, groupRoot, 'group');
   wrap.appendChild(btn);
   placeWrap(host, wrap);
@@ -2309,6 +2653,7 @@ function scanAndInject() {
   injectStyles();
   const siteId = detectSite(location.href);
   if (siteId === 'other') return;
+  if (siteId === 'xiaohongshu' && !isXiaohongshuDetailUrl(location.href)) return;
   const isX = siteId === 'x';
 
   const roots = siteId === 'x' ? Array.from(document.querySelectorAll<HTMLElement>('article')) : [document.body];
@@ -2323,6 +2668,10 @@ function scanAndInject() {
       if (siteId === 'pixiv' && isPixivNovelElement(mediaEl, location.href)) continue;
       if (siteId === 'pixiv' && isPixivAdElement(mediaEl, location.href)) continue;
       if (mediaEl.getAttribute(BOUND_ATTR) === '1') continue;
+      if (siteId === 'xiaohongshu' && isXiaohongshuUiNoise(mediaEl)) {
+        mediaEl.setAttribute(BOUND_ATTR, '1');
+        continue;
+      }
       mediaEl.setAttribute(BOUND_ATTR, '1');
 
       let anchor = findAnchorForMedia(mediaEl, siteId, location.href);
@@ -2348,7 +2697,7 @@ function scanAndInject() {
       if (groupRoot) {
         if (siteId === 'pixiv') {
           addPixivGroupControls(groupRoot);
-        } else {
+        } else if (siteId !== 'xiaohongshu') {
           const host = isX && groupRoot !== anchor ? anchor : groupRoot;
           addGroupButton(groupRoot, host);
         }
@@ -2359,11 +2708,26 @@ function scanAndInject() {
       anchor.classList.add(HOST_CLASS);
       ensureRelative(anchor);
       ensureClickableChain(anchor);
+      const isBlockedXPreviewVideo = isX && !isXDetailUrl() && isDirectXVideoMedia(mediaEl);
 
       const label = isX ? '保存本张' : groupRoot ? '保存本张' : '保存';
-      const title = isX ? '保存当前这一张' : groupRoot ? '仅保存当前这一张' : '保存此媒体';
+      const title = isX ? '只保存当前这张媒体' : groupRoot ? '只保存当前这一张' : '保存这个媒体';
       const btn = createButton(label, title);
       btn.dataset.site = siteId;
+      if (isBlockedXPreviewVideo) {
+        btn.textContent = '详情保存';
+        btn.title = '外部预览视频请打开详情页后保存';
+        btn.dataset.xicPreviewVideoBlocked = '1';
+      } else if (isX) {
+        btn.textContent = anchorHasMultiple ? '保存本张' : '保存';
+        btn.title = anchorHasMultiple ? '只保存当前这张媒体' : '保存这个媒体';
+      } else if (groupRoot) {
+        btn.textContent = '保存本张';
+        btn.title = '只保存当前这张';
+      } else {
+        btn.textContent = '保存';
+        btn.title = '保存这个媒体';
+      }
       const singleMode: SaveMode = isX && anchorHasMultiple ? 'group-active' : 'single';
       const singleTarget = isX && anchorHasMultiple ? (groupRoot ?? anchor) : mediaEl;
       bindButton(btn, singleTarget, singleMode);
@@ -2422,3 +2786,4 @@ const observer = new MutationObserver(() => scheduleScan());
 observer.observe(document.documentElement, { childList: true, subtree: true });
 bindGlobalClick();
 scheduleScan();
+

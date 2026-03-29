@@ -2,10 +2,22 @@
   "manifest_version": 3,
   "name": "ClipNest Collector",
   "version": "0.1.0",
-  "description": "ClipNest local-first media collector for X / Pixiv / Duitang.",
+  "description": "ClipNest local-first media collector for X, Pixiv, Duitang, Xiaohongshu, Baidu Images and Google Images.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "action": {
     "default_title": "ClipNest",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
   },
   "options_page": "options.html",
   "permissions": ["storage", "tabs", "scripting", "activeTab", "webRequest"],
@@ -18,6 +30,14 @@
     "https://*.pixiv.net/*",
     "https://*.pximg.net/*",
     "https://*.duitang.com/*",
+    "https://www.xiaohongshu.com/*",
+    "https://xiaohongshu.com/*",
+    "https://www.rednote.com/*",
+    "https://rednote.com/*",
+    "https://*.xhscdn.com/*",
+    "https://image.baidu.com/*",
+    "https://www.google.com/*",
+    "https://images.google.com/*",
     "http://localhost:*/*"
   ],
   "background": {
@@ -30,7 +50,14 @@
         "https://twitter.com/*",
         "https://www.pixiv.net/*",
         "https://pixiv.net/*",
-        "https://*.duitang.com/*"
+        "https://*.duitang.com/*",
+        "https://www.xiaohongshu.com/*",
+        "https://xiaohongshu.com/*",
+        "https://www.rednote.com/*",
+        "https://rednote.com/*",
+        "https://image.baidu.com/*",
+        "https://www.google.com/*",
+        "https://images.google.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

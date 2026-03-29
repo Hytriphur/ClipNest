@@ -672,6 +672,62 @@ async function extractFromTab(tabId: number): Promise<IngestItem[]> {
   return (r.items ?? []) as IngestItem[];
 }
 
+async function extractXVideoFromTab(tabId: number, tweetUrl: string, hintIds?: string[]): Promise<IngestItem[]> {
+  const r = await chrome.tabs.sendMessage(tabId, { type: 'XIC_EXTRACT_X_VIDEO_FOR_TWEET', tweetUrl, hintIds });
+  if (!r?.ok) throw new Error(r?.error ?? 'x video extract failed');
+  return (r.items ?? []) as IngestItem[];
+}
+
+function extractTweetIdFromUrl(value?: string | null): string | null {
+  if (!value) return null;
+  try {
+    const u = new URL(value);
+    const match = u.pathname.match(/\/status\/(\d+)/i) ?? u.pathname.match(/\/i\/status\/(\d+)/i);
+    return match?.[1] ?? null;
+  } catch {
+    const match = String(value).match(/\/status\/(\d+)/i) ?? String(value).match(/\/i\/status\/(\d+)/i);
+    return match?.[1] ?? null;
+  }
+}
+
+async function extractXVideoItemsFromTweetUrl(tweetUrl: string, hintIds?: string[]): Promise<IngestItem[]> {
+  let tabId: number | null = null;
+  try {
+    const tab = await chrome.tabs.create({ url: tweetUrl, active: false });
+    if (!tab.id) throw new Error('failed to open tweet detail');
+    tabId = tab.id;
+    await waitForTabComplete(tabId, 25_000);
+    let items: IngestItem[] = [];
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await sleep(700 + attempt * 550);
+      try {
+        items = await extractXVideoFromTab(tabId, tweetUrl, hintIds);
+        if (!items.length) {
+          items = (await extractFromTab(tabId)).filter((item) => item.mediaType === 'video');
+        }
+        if (items.length) break;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    if (!items.length && lastErr) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+    const targetTweetId = extractTweetIdFromUrl(tweetUrl);
+    const videoItems = items.filter((item) => item.mediaType === 'video');
+    if (!targetTweetId) return videoItems;
+    const exact = videoItems.filter((item) => extractTweetIdFromUrl(item.tweetUrl ?? item.sourcePageUrl) === targetTweetId);
+    return exact.length ? exact : videoItems;
+  } finally {
+    if (tabId !== null) {
+      try {
+        await chrome.tabs.remove(tabId);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
 async function scrollTab(tabId: number) {
   await chrome.scripting.executeScript({
     target: { tabId },
@@ -827,6 +883,21 @@ async function runAutoTargets() {
         return;
       }
       sendResponse({ ok: true, urls: getRecentVideoUrls(tabId) });
+      return;
+    }
+    if (msg?.type === 'XIC_EXTRACT_X_VIDEO_FROM_TWEET') {
+      const tweetUrl = String(msg?.tweetUrl ?? '').trim();
+      const hintIds = Array.isArray(msg?.hintIds) ? msg.hintIds.map((v: any) => String(v ?? '').trim()).filter(Boolean) : [];
+      if (!tweetUrl) {
+        sendResponse({ ok: false, error: 'missing tweet url', items: [] });
+        return;
+      }
+      try {
+        const items = await extractXVideoItemsFromTweetUrl(tweetUrl, hintIds);
+        sendResponse({ ok: true, items });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err), items: [] });
+      }
       return;
     }
     if (msg?.type === 'XIC_PING') {

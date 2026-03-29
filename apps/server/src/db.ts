@@ -9,6 +9,7 @@ type BetterSqlite3Database = {
     all(params?: any): any[];
   };
   pragma(sql: string): any;
+  close(): void;
 };
 
 export type Db = BetterSqlite3Database;

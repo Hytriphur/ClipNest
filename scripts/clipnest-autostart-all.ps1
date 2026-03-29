@@ -1,73 +1,109 @@
-$ErrorActionPreference = "Stop"
-
-# ClipNest autostart (server + web) using the Startup folder (Windows)
+# ClipNest autostart installer (Windows, silent, server + web)
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clipnest-autostart-all.ps1
 
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$Node = (Get-Command node -ErrorAction Stop).Source
+param(
+  [string]$TaskServer = "ClipNest Server",
+  [string]$TaskWeb = "ClipNest Web",
+  [string]$Proxy = "http://127.0.0.1:7890",
+  [string]$LogLevel = "info",
+  [int]$Port = 5174,
+  [int]$WebPort = 5173
+)
 
-$ServerEntry = Join-Path $RepoRoot "apps\\server\\dist\\index.js"
-if (!(Test-Path $ServerEntry)) {
-  Write-Host "Cannot find server build: $ServerEntry"
-  Write-Host "Run: npm run build -w apps/server"
-  exit 1
-}
+$ErrorActionPreference = "Stop"
 
-$WebDist = Join-Path $RepoRoot "apps\\web\\dist\\index.html"
-if (!(Test-Path $WebDist)) {
-  Write-Host "Cannot find web build: $WebDist"
-  Write-Host "Run: npm run build -w apps/web"
-  exit 1
-}
-
-$ViteEntry = Join-Path $RepoRoot "node_modules\\vite\\bin\\vite.js"
-if (!(Test-Path $ViteEntry)) {
-  $ViteAlt = Join-Path $RepoRoot "apps\\web\\node_modules\\vite\\bin\\vite.js"
-  if (Test-Path $ViteAlt) {
-    $ViteEntry = $ViteAlt
-  } else {
-    Write-Host "Cannot find Vite entry: $ViteEntry"
-    Write-Host "Run: npm install"
-    exit 1
+function Remove-LegacyStartupEntries([string]$startupDir) {
+  $legacyFiles = @(
+    (Join-Path $startupDir "ClipNest Startup.cmd"),
+    (Join-Path $startupDir "ClipNest Startup.vbs")
+  )
+  foreach ($f in $legacyFiles) {
+    if (Test-Path $f) {
+      Remove-Item -LiteralPath $f -Force
+      Write-Host "Removed legacy startup entry: $f"
+    }
   }
 }
 
-# Editable settings
-$Proxy = "http://127.0.0.1:7890" # set to "off" or "" to disable
-$LogLevel = "info"
-$Port = "5174"
-$WebPort = "5173"
-
-$EnvLines = @(
-  "set XIC_LOG_LEVEL=$LogLevel",
-  "set PORT=$Port"
-)
-if ($Proxy -and $Proxy -ne "off") {
-  $EnvLines += "set XIC_PROXY=$Proxy"
+function Remove-TaskIfExists([string]$taskName) {
+  $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+  if ($task) {
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    Write-Host "Removed old task: $taskName"
+  }
 }
 
-$StartupCmd = Join-Path $RepoRoot "scripts\\clipnest-startup.cmd"
-$StartupDir = [Environment]::GetFolderPath("Startup")
+function Register-HiddenTask(
+  [string]$taskName,
+  [string]$scriptPath,
+  [string]$scriptArgs
+) {
+  $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+  $psArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" $scriptArgs"
 
-$CmdLines = @(
-  "@echo off",
-  "cd /d `"$RepoRoot`"",
-  ($EnvLines -join " && ")
-)
+  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $psArgs
+  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+  $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
+  $settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -MultipleInstances IgnoreNew `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit ([TimeSpan]::FromDays(3650))
 
-$ServerLine = "start `"ClipNest Server`" /min `"$Node`" `"$ServerEntry`""
-$WebLine = "start `"ClipNest Web`" /min `"$Node`" `"$ViteEntry`" preview -w apps/web --host 127.0.0.1 --port $WebPort"
+  Register-ScheduledTask `
+    -TaskName $taskName `
+    -Action $action `
+    -Trigger $trigger `
+    -Principal $principal `
+    -Settings $settings `
+    -Description "ClipNest background service task" `
+    -Force | Out-Null
 
-$CmdLines += $ServerLine
-$CmdLines += $WebLine
-$CmdLines += "exit /b 0"
+  Write-Host "Registered task: $taskName"
+}
 
-Set-Content -Path $StartupCmd -Value $CmdLines -Encoding ASCII
-Copy-Item -Force $StartupCmd (Join-Path $StartupDir "ClipNest Startup.cmd")
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$ServerScript = Join-Path $RepoRoot "scripts\\clipnest-run-server.ps1"
+$WebScript = Join-Path $RepoRoot "scripts\\clipnest-run-web.ps1"
 
-Write-Host "Done."
-Write-Host "Startup script installed at:"
-Write-Host "  $StartupDir\\ClipNest Startup.cmd"
-Write-Host "You can test it now by running:"
-Write-Host "  `"$StartupDir\\ClipNest Startup.cmd`""
+if (!(Test-Path $ServerScript)) {
+  throw "Missing script: $ServerScript"
+}
+if (!(Test-Path $WebScript)) {
+  throw "Missing script: $WebScript"
+}
+
+$ServerEntry = Join-Path $RepoRoot "apps\\server\\dist\\index.js"
+$WebEntry = Join-Path $RepoRoot "apps\\web\\dist\\index.html"
+if (!(Test-Path $ServerEntry)) {
+  throw "Server build missing. Run: npm run build -w apps/server"
+}
+if (!(Test-Path $WebEntry)) {
+  throw "Web build missing. Run: npm run build -w apps/web"
+}
+
+$startupDir = [Environment]::GetFolderPath("Startup")
+Remove-LegacyStartupEntries -startupDir $startupDir
+Remove-TaskIfExists -taskName $TaskServer
+Remove-TaskIfExists -taskName $TaskWeb
+
+$serverArgs = "-RepoRoot `"$RepoRoot`" -Proxy `"$Proxy`" -LogLevel `"$LogLevel`" -Port $Port"
+$webArgs = "-RepoRoot `"$RepoRoot`" -WebPort $WebPort"
+
+Register-HiddenTask -taskName $TaskServer -scriptPath $ServerScript -scriptArgs $serverArgs
+Register-HiddenTask -taskName $TaskWeb -scriptPath $WebScript -scriptArgs $webArgs
+
+Start-ScheduledTask -TaskName $TaskServer
+Start-ScheduledTask -TaskName $TaskWeb
+
+Write-Host ""
+Write-Host "Autostart installed and tasks started."
+Write-Host "Verify:"
+Write-Host "  http://localhost:$Port/api/health"
+Write-Host "  http://localhost:$WebPort"
+Write-Host ""
+Write-Host "Task status:"
+Write-Host "  Get-ScheduledTask -TaskName `"$TaskServer`", `"$TaskWeb`" | Select-Object TaskName, State"

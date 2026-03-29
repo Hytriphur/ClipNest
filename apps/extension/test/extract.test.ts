@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { extractFromDocument, extractFromElement, extractFromRoot, findMediaElements } from '../src/lib/extract';
+import { detectSite, extractFromDocument, extractFromElement, extractFromRoot, findMediaElements } from '../src/lib/extract';
 
 describe('extractFromDocument', () => {
   it('extracts tweet media and excludes profile images', () => {
@@ -205,5 +205,68 @@ describe('extractFromDocument', () => {
     const r = extractFromDocument(dom.window.document, dom.window.location.href);
     expect(r.items.length).toBe(1);
     expect(r.items[0]?.mediaUrl).toContain('duitang.com/uploads/item/202402/12/20240212000000_xxx.jpeg');
+  });
+
+  it('detects newly supported sites', () => {
+    expect(detectSite('https://www.xiaohongshu.com/explore/123456')).toBe('xiaohongshu');
+    expect(detectSite('https://image.baidu.com/search/index?tn=baiduimage')).toBe('baidu');
+    expect(detectSite('https://www.google.com/search?tbm=isch&q=cat')).toBe('google');
+  });
+
+  it('extracts google image originals from imgres links', () => {
+    const html = `
+      <html>
+        <body>
+          <a href="https://www.google.com/imgres?imgurl=https%3A%2F%2Fcdn.example.com%2Fcat.jpg&imgrefurl=https%3A%2F%2Fexample.com%2Fpost">
+            <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:abc" />
+          </a>
+        </body>
+      </html>
+    `;
+    const dom = new JSDOM(html, { url: 'https://www.google.com/search?tbm=isch&q=cat' });
+    const r = extractFromDocument(dom.window.document, dom.window.location.href);
+    expect(r.items.length).toBe(1);
+    expect(r.items[0]?.mediaUrl).toBe('https://cdn.example.com/cat.jpg');
+    expect(r.items[0]?.sourcePageUrl).toBe('https://example.com/post');
+  });
+
+  it('extracts baidu image originals from result links', () => {
+    const html = `
+      <html>
+        <body>
+          <a href="https://image.baidu.com/search/detail?objurl=https%3A%2F%2Fimg.example.com%2Fpic.png&fromurl=https%3A%2F%2Fexample.com%2Fpage">
+            <img src="https://img1.baidu.com/it/u=123,456&fm=253&fmt=auto" />
+          </a>
+        </body>
+      </html>
+    `;
+    const dom = new JSDOM(html, { url: 'https://image.baidu.com/search/index?word=cat' });
+    const r = extractFromDocument(dom.window.document, dom.window.location.href);
+    expect(r.items.length).toBe(1);
+    expect(r.items[0]?.mediaUrl).toBe('https://img.example.com/pic.png');
+    expect(r.items[0]?.sourcePageUrl).toBe('https://example.com/page');
+  });
+
+  it('extracts xiaohongshu media and filters avatar assets', () => {
+    const html = `
+      <html>
+        <head>
+          <meta name="keywords" content="旅行,风景,胶片" />
+          <meta name="author" content="测试作者" />
+        </head>
+        <body>
+          <img src="https://sns-avatar-qc.xhscdn.com/avatar/abc.jpg" />
+          <a href="/explore/66f0cafe000000001203abcd">
+            <img src="https://sns-webpic-qc.xhscdn.com/202401010000/abc123.jpg?imageView2/2/w/1080" />
+          </a>
+        </body>
+      </html>
+    `;
+    const dom = new JSDOM(html, { url: 'https://www.xiaohongshu.com/explore/66f0cafe000000001203abcd' });
+    const r = extractFromDocument(dom.window.document, dom.window.location.href);
+    expect(r.items.length).toBe(1);
+    expect(r.items[0]?.mediaUrl).toContain('sns-webpic-qc.xhscdn.com/202401010000/abc123.jpg');
+    expect(r.items[0]?.authorHandle).toBe('测试作者');
+    expect(r.items[0]?.context?.tags).toEqual(expect.arrayContaining(['旅行', '风景', '胶片']));
   });
 });

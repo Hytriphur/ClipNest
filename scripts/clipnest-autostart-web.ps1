@@ -1,32 +1,46 @@
-$ErrorActionPreference = "Stop"
-
-# ClipNest web UI autostart task for current user (Windows Task Scheduler)
+# ClipNest web-only autostart installer (Windows, silent)
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clipnest-autostart-web.ps1
 
-$RepoRoot = "G:\\projects\\x-image-collector"
-$TaskName = "ClipNest Web"
-$WebPort = "5173"
+param(
+  [string]$TaskName = "ClipNest Web",
+  [int]$WebPort = 5173
+)
 
-$NpmCli = Join-Path $RepoRoot "node_modules\\npm\\bin\\npm-cli.js"
-if (!(Test-Path $NpmCli)) {
-  Write-Host "Cannot find npm-cli at: $NpmCli"
-  Write-Host "Run: npm install"
-  exit 1
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$ScriptPath = Join-Path $RepoRoot "scripts\\clipnest-run-web.ps1"
+$WebEntry = Join-Path $RepoRoot "apps\\web\\dist\\index.html"
+if (!(Test-Path $ScriptPath)) {
+  throw "Missing script: $ScriptPath"
+}
+if (!(Test-Path $WebEntry)) {
+  throw "Web build missing. Run: npm run build -w apps/web"
 }
 
-Write-Host "Creating scheduled task '$TaskName' (Run at logon for current user)..."
+$startupDir = [Environment]::GetFolderPath("Startup")
+$legacy = Join-Path $startupDir "ClipNest Startup.vbs"
+if (Test-Path $legacy) {
+  Remove-Item -LiteralPath $legacy -Force
+  Write-Host "Removed legacy startup entry: $legacy"
+}
 
-# Use Vite preview for a stable, no-watch web server.
-$Cmd = "cd /d `"$RepoRoot`" && node `"$NpmCli`" run preview -w apps/web -- --host 127.0.0.1 --port $WebPort"
+$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($existing) {
+  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+}
 
-schtasks /Create /F /SC ONLOGON /RL LIMITED /TN "$TaskName" /TR "cmd.exe /c $Cmd" | Out-Null
+$userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$args = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`" -RepoRoot `"$RepoRoot`" -WebPort $WebPort"
 
-Write-Host "Done. Build the web UI once before first run:"
-Write-Host "  npm run build -w apps/web"
-Write-Host "Verify with:"
-Write-Host "  schtasks /Query /TN `"$TaskName`""
-Write-Host "Start immediately with:"
-Write-Host "  schtasks /Run /TN `"$TaskName`""
-Write-Host "Delete with:"
-Write-Host "  schtasks /Delete /TN `"$TaskName`" /F"
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $args
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::FromDays(3650))
+
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description "ClipNest web background task" -Force | Out-Null
+Start-ScheduledTask -TaskName $TaskName
+
+Write-Host "Installed and started task: $TaskName"
+Write-Host "Verify: http://localhost:$WebPort"

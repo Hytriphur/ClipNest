@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
@@ -6,144 +6,549 @@
     <title>ClipNest 采集助手</title>
     <style>
       :root {
-        --bg: #f6f8fb;
-        --card: rgba(255, 255, 255, 0.92);
-        --border: rgba(15, 23, 42, 0.12);
-        --text: #0f172a;
-        --muted: rgba(15, 23, 42, 0.62);
-        --accent: #3b82f6;
-        --accent-soft: rgba(59, 130, 246, 0.12);
+        --bg-0: #f5fbff;
+        --bg-1: #eef7ff;
+        --bg-2: #e7f3ff;
+        --text: #12213b;
+        --muted: rgba(18, 33, 59, 0.62);
+        --card: rgba(255, 255, 255, 0.82);
+        --card-strong: rgba(255, 255, 255, 0.95);
+        --border: rgba(76, 120, 202, 0.14);
+        --accent: #1d4ed8;
+        --accent-2: #06b6d4;
+        --accent-3: #38bdf8;
+        --ok: #059669;
+        --ok-soft: rgba(5, 150, 105, 0.12);
+        --warn: #7c3aed;
+        --warn-soft: rgba(124, 58, 237, 0.12);
+        --shadow: 0 20px 44px rgba(56, 88, 156, 0.14);
       }
+
+      * {
+        box-sizing: border-box;
+      }
+
       body {
         margin: 0;
-        background:
-          radial-gradient(420px 280px at 8% 0%, rgba(59, 130, 246, 0.16), transparent 60%),
-          radial-gradient(360px 240px at 90% 10%, rgba(14, 165, 233, 0.12), transparent 60%),
-          linear-gradient(180deg, #f6f8fb, #eef3fb);
+        width: 368px;
         color: var(--text);
-        font: 13px/1.4 "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-        width: 360px;
+        font: 13px/1.45 "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+        background:
+          radial-gradient(340px 220px at -8% -8%, rgba(34, 211, 238, 0.26), transparent 70%),
+          radial-gradient(260px 180px at 108% 2%, rgba(59, 130, 246, 0.24), transparent 66%),
+          radial-gradient(260px 180px at 60% 100%, rgba(14, 165, 233, 0.14), transparent 72%),
+          linear-gradient(180deg, var(--bg-0), var(--bg-1) 54%, var(--bg-2));
       }
-      .wrap {
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background:
+          linear-gradient(130deg, rgba(255, 255, 255, 0.56), transparent 34%),
+          radial-gradient(360px 220px at 50% 100%, rgba(29, 78, 216, 0.08), transparent 70%);
+        pointer-events: none;
+      }
+
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.16) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.16) 1px, transparent 1px);
+        background-size: 24px 24px;
+        mask-image: radial-gradient(circle at 50% 24%, rgba(0, 0, 0, 0.3), transparent 76%);
+        pointer-events: none;
+        opacity: 0.55;
+      }
+
+      .shell {
+        position: relative;
         padding: 12px;
         display: grid;
         gap: 10px;
       }
+
       .card {
+        position: relative;
+        overflow: hidden;
+        border-radius: 22px;
         border: 1px solid var(--border);
         background: var(--card);
-        border-radius: 14px;
-        padding: 10px;
-        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+        backdrop-filter: blur(14px);
+        box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.68);
       }
-      .title {
-        font-weight: 700;
-        letter-spacing: -0.02em;
-        margin-bottom: 6px;
+
+      .card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 44%);
+        pointer-events: none;
       }
-      .status {
-        font-size: 12px;
-        color: var(--muted);
+
+      .hero {
+        padding: 14px 14px 12px;
+        background:
+          linear-gradient(145deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.18)),
+          linear-gradient(140deg, rgba(29, 78, 216, 0.12), rgba(6, 182, 212, 0.1));
       }
-      .sub {
-        margin-top: 6px;
-        font-size: 12px;
-        color: var(--muted);
-      }
-      .row {
+
+      .hero-top {
         display: flex;
-        gap: 8px;
         align-items: center;
         justify-content: space-between;
+        gap: 12px;
       }
-      .split {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px;
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
       }
-      button {
-        width: 100%;
-        cursor: pointer;
-        border-radius: 12px;
-        border: 1px solid rgba(15, 23, 42, 0.14);
-        background: #fff;
-        color: var(--text);
-        padding: 9px 10px;
-        font-weight: 600;
-        transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+
+      .brand-mark {
+        position: relative;
+        width: 42px;
+        height: 42px;
+        border-radius: 14px;
+        background:
+          radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0) 38%),
+          linear-gradient(145deg, var(--accent), var(--accent-2));
+        box-shadow:
+          0 14px 28px rgba(29, 78, 216, 0.24),
+          inset 0 1px 0 rgba(255, 255, 255, 0.54);
       }
-      button:hover {
-        border-color: rgba(59, 130, 246, 0.4);
-        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
-        transform: translateY(-1px);
+
+      .brand-mark::before {
+        content: "";
+        position: absolute;
+        inset: 8px;
+        border-radius: 11px;
+        border: 2px solid rgba(255, 255, 255, 0.9);
       }
-      .btn-primary {
-        border-color: rgba(59, 130, 246, 0.55);
-        background: linear-gradient(135deg, #ffffff, rgba(59, 130, 246, 0.12));
+
+      .brand-mark::after {
+        content: "";
+        position: absolute;
+        right: 8px;
+        bottom: 8px;
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #f8fbff;
+        box-shadow: 0 0 0 4px rgba(248, 251, 255, 0.18);
       }
-      .btn-ghost {
-        background: rgba(255, 255, 255, 0.76);
+
+      .eyebrow {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(29, 78, 216, 0.9);
       }
-      .small {
+
+      h1 {
+        margin: 2px 0 0;
+        font-size: 18px;
+        line-height: 1.16;
+        letter-spacing: -0.03em;
+      }
+
+      .lead {
+        margin: 8px 0 0;
+        max-width: 250px;
         color: var(--muted);
         font-size: 12px;
       }
-      code {
-        color: var(--accent);
+
+      .hero-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 32px;
+        padding: 0 12px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid rgba(82, 120, 190, 0.12);
+        color: rgba(18, 33, 59, 0.72);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
       }
-      .grid {
+
+      .hero-badge::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: linear-gradient(180deg, var(--accent-3), var(--accent-2));
+        box-shadow: 0 0 0 5px rgba(56, 189, 248, 0.14);
+      }
+
+      .dashboard {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      .panel {
+        padding: 12px;
+        min-height: 162px;
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .section-title {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(18, 33, 59, 0.54);
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 24px;
+        padding: 0 10px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        border: 1px solid transparent;
+      }
+
+      .pill[data-tone="ok"] {
+        color: var(--ok);
+        background: var(--ok-soft);
+        border-color: rgba(5, 150, 105, 0.16);
+      }
+
+      .pill[data-tone="warn"] {
+        color: var(--warn);
+        background: var(--warn-soft);
+        border-color: rgba(124, 58, 237, 0.16);
+      }
+
+      .pill[data-tone="muted"] {
+        color: rgba(18, 33, 59, 0.66);
+        background: rgba(18, 33, 59, 0.06);
+        border-color: rgba(18, 33, 59, 0.08);
+      }
+
+      .status-hero {
+        margin-top: 10px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .meter {
+        position: relative;
+        flex: 0 0 auto;
+        width: 56px;
+        height: 56px;
+        display: grid;
+        place-items: center;
+        border-radius: 999px;
+        background:
+          radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.12) 42%, transparent 44%),
+          linear-gradient(145deg, rgba(29, 78, 216, 0.18), rgba(6, 182, 212, 0.18));
+        box-shadow: inset 0 0 0 1px rgba(76, 120, 202, 0.12);
+      }
+
+      .meter::before {
+        content: "";
+        position: absolute;
+        inset: 5px;
+        border-radius: inherit;
+        border: 2px solid rgba(255, 255, 255, 0.9);
+      }
+
+      .meter-dot {
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+        background: linear-gradient(180deg, var(--accent-3), var(--accent-2));
+        box-shadow: 0 0 0 8px rgba(6, 182, 212, 0.12);
+      }
+
+      .meter-dot[data-state="ok"] {
+        background: linear-gradient(180deg, #34d399, #059669);
+        box-shadow: 0 0 0 8px rgba(5, 150, 105, 0.12);
+      }
+
+      .meter-dot[data-state="warn"] {
+        background: linear-gradient(180deg, #a78bfa, #7c3aed);
+        box-shadow: 0 0 0 8px rgba(124, 58, 237, 0.12);
+      }
+
+      .status-copy {
+        min-width: 0;
+      }
+
+      .status-main {
+        font-size: 17px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+      }
+
+      .status-sub {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .endpoint {
+        margin-top: 10px;
+        padding: 10px 11px;
+        border-radius: 16px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(242, 247, 255, 0.92));
+        border: 1px solid rgba(82, 120, 190, 0.1);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.66);
+      }
+
+      .endpoint-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .endpoint-label {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(29, 78, 216, 0.72);
+      }
+
+      .server-port {
+        min-height: 22px;
+        padding: 0 8px;
+        border-radius: 999px;
+        background: rgba(29, 78, 216, 0.08);
+        color: var(--accent);
+        font-size: 10px;
+        font-weight: 800;
+        line-height: 22px;
+      }
+
+      .server-url {
+        display: block;
+        margin-top: 6px;
+        color: var(--accent);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 10px;
+        line-height: 1.45;
+        word-break: break-all;
+      }
+
+      .hint {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .site-stack {
+        margin-top: 12px;
         display: grid;
         gap: 8px;
       }
+
+      .site-name {
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+      }
+
+      .site-detail {
+        padding: 9px 11px;
+        border-radius: 16px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(242, 247, 255, 0.92));
+        border: 1px solid rgba(82, 120, 190, 0.1);
+        color: rgba(18, 33, 59, 0.78);
+        font-size: 11px;
+      }
+
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      button {
+        appearance: none;
+        border: 0;
+        cursor: pointer;
+        min-height: 62px;
+        padding: 0 14px;
+        border-radius: 18px;
+        text-align: left;
+        font: inherit;
+        font-weight: 800;
+        color: var(--text);
+        transition:
+          transform 0.18s ease,
+          box-shadow 0.2s ease,
+          border-color 0.2s ease,
+          background 0.2s ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px) scale(1.01);
+      }
+
+      button.primary {
+        color: #f8fbff;
+        background:
+          radial-gradient(circle at 18% 20%, rgba(255, 255, 255, 0.3), transparent 32%),
+          linear-gradient(135deg, var(--accent), var(--accent-2));
+        box-shadow: 0 18px 30px rgba(29, 78, 216, 0.3);
+      }
+
+      button.secondary {
+        background: var(--card-strong);
+        border: 1px solid rgba(82, 120, 190, 0.12);
+        box-shadow: 0 14px 26px rgba(82, 120, 190, 0.12);
+      }
+
+      .button-title {
+        display: block;
+        font-size: 14px;
+      }
+
+      .button-sub {
+        display: block;
+        margin-top: 3px;
+        font-size: 11px;
+        font-weight: 700;
+        opacity: 0.78;
+      }
+
+      .site-strip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 2px;
+      }
+
       .chips {
         display: flex;
-        gap: 6px;
-        margin-top: 8px;
         flex-wrap: wrap;
+        gap: 6px;
       }
+
       .chip {
-        padding: 4px 8px;
+        padding: 6px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(15, 23, 42, 0.12);
-        background: var(--accent-soft);
+        border: 1px solid rgba(82, 120, 190, 0.14);
+        background: rgba(255, 255, 255, 0.74);
+        color: rgba(18, 33, 59, 0.72);
         font-size: 11px;
-        color: #0f172a;
+        font-weight: 800;
+        transition: all 0.2s ease;
+      }
+
+      .chip[data-active="true"] {
+        color: #0f3db8;
+        border-color: rgba(29, 78, 216, 0.22);
+        background: linear-gradient(180deg, rgba(29, 78, 216, 0.12), rgba(6, 182, 212, 0.1));
+        box-shadow:
+          inset 0 0 0 1px rgba(29, 78, 216, 0.06),
+          0 10px 18px rgba(29, 78, 216, 0.1);
+      }
+
+      .mini-hint {
+        color: var(--muted);
+        font-size: 11px;
+        text-align: right;
       }
     </style>
   </head>
   <body>
-    <div class="wrap">
-      <div class="card">
-        <div class="title">ClipNest 采集助手</div>
-        <div class="status">
-          服务：<code id="serverUrl"></code>
-          <span id="serverStatus"></span>
+    <div class="shell">
+      <section class="card hero">
+        <div class="hero-top">
+          <div class="brand">
+            <div class="brand-mark" aria-hidden="true"></div>
+            <div>
+              <div class="eyebrow">ClipNest</div>
+              <h1>网页里直接保存</h1>
+            </div>
+          </div>
+          <div class="hero-badge">本地优先</div>
         </div>
-        <div class="sub">支持 X / Pixiv / 堆糖。浏览器已登录即可采集。</div>
+        <p class="lead" id="usageHint">只保留状态、图库和设置入口，点网页里的保存按钮就能采集。</p>
+      </section>
+
+      <section class="dashboard">
+        <div class="card panel">
+          <div class="panel-head">
+            <div class="section-title">服务状态</div>
+            <span class="pill" id="serverStatus" data-tone="muted">检测中</span>
+          </div>
+          <div class="status-hero">
+            <div class="meter" aria-hidden="true">
+              <div class="meter-dot" id="serverDot" data-state="muted"></div>
+            </div>
+            <div class="status-copy">
+              <div class="status-main" id="serverStateLabel">等待连接</div>
+              <div class="status-sub" id="serverHint">正在检查本地服务</div>
+            </div>
+          </div>
+          <div class="endpoint">
+            <div class="endpoint-top">
+              <span class="endpoint-label" id="serverHost">localhost</span>
+              <span class="server-port" id="serverPort">5174</span>
+            </div>
+            <code class="server-url" id="serverUrl">http://localhost:5174</code>
+          </div>
+        </div>
+
+        <div class="card panel">
+          <div class="panel-head">
+            <div class="section-title">当前页面</div>
+            <span class="pill" id="siteStatus" data-tone="muted">识别中</span>
+          </div>
+          <div class="site-stack">
+            <div class="site-name" id="siteName">正在识别站点</div>
+            <div class="site-detail" id="siteDetail">请稍候</div>
+          </div>
+          <div class="hint" id="siteHint">等待读取当前标签页</div>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button class="primary" id="btnOpenLibrary" type="button">
+          <span class="button-title">打开图库</span>
+          <span class="button-sub">归档、分类、打标</span>
+        </button>
+        <button class="secondary" id="btnOptions" type="button">
+          <span class="button-title">打开设置</span>
+          <span class="button-sub">服务地址与规则</span>
+        </button>
+      </div>
+
+      <section class="site-strip">
         <div class="chips">
-          <span class="chip">X</span>
-          <span class="chip">Pixiv</span>
-          <span class="chip">堆糖</span>
+          <span class="chip" data-site-chip="x" data-active="false">X</span>
+          <span class="chip" data-site-chip="pixiv" data-active="false">Pixiv</span>
+          <span class="chip" data-site-chip="duitang" data-active="false">堆糖</span>
+          <span class="chip" data-site-chip="xiaohongshu" data-active="false">小红书</span>
+          <span class="chip" data-site-chip="baidu" data-active="false">百度图片</span>
+          <span class="chip" data-site-chip="google" data-active="false">Google 图片</span>
         </div>
-      </div>
-
-      <div class="card grid">
-        <button class="btn-primary" id="btnSavePage">保存当前页媒体</button>
-        <button id="btnAddTarget">加入当前页到自动目标</button>
-        <div class="split">
-          <button id="btnAutoStart">开始自动采集</button>
-          <button class="btn-ghost" id="btnAutoStop">停止</button>
-        </div>
-        <div class="split">
-          <button class="btn-ghost" id="btnOptions">设置</button>
-          <button class="btn-ghost" id="btnOpenLibrary">打开图库</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="title">最近结果</div>
-        <div class="small" id="lastResult">暂无操作。</div>
-      </div>
+        <div class="mini-hint">站内点保存</div>
+      </section>
     </div>
 
     <script src="popup.js"></script>

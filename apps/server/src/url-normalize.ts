@@ -49,7 +49,9 @@ export function normalizeMediaUrl(rawUrl: string): string {
 
   // video.twimg.com/... (mp4)
   if (url.hostname === 'video.twimg.com') {
-    // Keep query; some video URLs rely on params (e.g. tag/format).
+    // Video query params are typically transient tracking/version markers.
+    // Strip them so identical clips collapse to one canonical URL.
+    url.search = '';
     return url.toString();
   }
 

@@ -12,11 +12,13 @@ export type FsLayout = {
   trashThumbsDir: string;
 };
 
-export function getFsLayout(cfg: ServerConfig): FsLayout {
+export function getFsLayout(cfg: ServerConfig, opts?: { libraryRoot?: string | null }): FsLayout {
+  const libraryRoot = opts?.libraryRoot?.trim() ? path.resolve(opts.libraryRoot.trim()) : null;
+  const mediaDir = libraryRoot ? path.join(libraryRoot, '_unarchived') : path.join(cfg.dataDir, 'media');
   return {
     rootDir: cfg.dataDir,
     dbPath: path.join(cfg.dataDir, 'db.sqlite'),
-    mediaDir: path.join(cfg.dataDir, 'media'),
+    mediaDir,
     thumbsDir: path.join(cfg.dataDir, 'thumbs'),
     trashDir: path.join(cfg.dataDir, 'trash'),
     trashMediaDir: path.join(cfg.dataDir, 'trash', 'media'),

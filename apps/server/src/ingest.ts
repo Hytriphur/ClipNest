@@ -391,7 +391,13 @@ export async function ingestItems(opts: {
             } catch {
               // ignore
             }
-            report({ stage: 'exists', url: normalizedUrl, usedUrl });
+            report({
+              stage: 'exists',
+              url: normalizedUrl,
+              usedUrl,
+              bytes: dl.bytes,
+              total: dl.contentLength ?? dl.bytes,
+            });
             return { input, ok: true, status: 'exists', mediaId: existing.id, sha256 };
           }
 
@@ -455,7 +461,13 @@ export async function ingestItems(opts: {
           insertSourceAndLink(opts.db, mediaId, input);
           applyTags(opts.db, mediaId, tags, tagSource);
 
-          report({ stage: 'created', url: normalizedUrl, usedUrl });
+          report({
+            stage: 'created',
+            url: normalizedUrl,
+            usedUrl,
+            bytes: dl.bytes,
+            total: dl.contentLength ?? dl.bytes,
+          });
           return { input, ok: true, status: 'created', mediaId, sha256 };
         } catch (err) {
           report({

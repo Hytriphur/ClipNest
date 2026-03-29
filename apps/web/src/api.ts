@@ -33,6 +33,7 @@ export type MediaItem = {
   savedAt: string;
   origin: 'x' | 'local';
   archivedAt: string | null;
+  deletedAt: string | null;
   favorite: boolean;
   rating: number;
   fileUrl: string;
@@ -42,14 +43,50 @@ export type MediaItem = {
   collections: string[];
 };
 
+const DEFAULT_API_ORIGIN = 'http://localhost:5174';
+
+function resolveApiOrigin() {
+  const configured = import.meta.env.VITE_API_BASE?.trim();
+  if (configured) {
+    return configured.replace(/\/+$/, '');
+  }
+  if (typeof window !== 'undefined') {
+    const { hostname, origin, protocol } = window.location;
+    if ((protocol === 'http:' || protocol === 'https:') && (hostname === 'localhost' || hostname === '127.0.0.1')) {
+      if (window.location.port === '5174') {
+        return origin;
+      }
+      return `${protocol}//${hostname}:5174`;
+    }
+  }
+  return DEFAULT_API_ORIGIN;
+}
+
+const API_ORIGIN = resolveApiOrigin();
+
+function apiUrl(path: string) {
+  if (/^https?:\/\//i.test(path)) {
+    return path;
+  }
+  return `${API_ORIGIN}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+function normalizeMediaItem(item: MediaItem): MediaItem {
+  return {
+    ...item,
+    fileUrl: apiUrl(item.fileUrl),
+    thumbUrl: item.thumbUrl ? apiUrl(item.thumbUrl) : null,
+  };
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(path);
+  const res = await fetch(apiUrl(path));
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return (await res.json()) as T;
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -85,6 +122,7 @@ export async function fetchMedia(opts: {
   from?: string;
   to?: string;
   archived?: 'all' | 'yes' | 'no';
+  deleted?: 'all' | 'yes' | 'no';
   favorite?: boolean;
 }): Promise<{ items: MediaItem[]; nextOffset: number; totalCount: number | null }> {
   const params = new URLSearchParams();
@@ -99,11 +137,16 @@ export async function fetchMedia(opts: {
   if (opts.from?.trim()) params.set('from', opts.from.trim());
   if (opts.to?.trim()) params.set('to', opts.to.trim());
   if (opts.archived && opts.archived !== 'all') params.set('archived', opts.archived);
+  if (opts.deleted && opts.deleted !== 'all') params.set('deleted', opts.deleted);
   if (opts.favorite) params.set('favorite', '1');
   const r = await apiGet<{ ok: true; items: MediaItem[]; nextOffset: number; totalCount?: number }>(
     `/api/media?${params}`,
   );
-  return { items: r.items, nextOffset: r.nextOffset, totalCount: typeof r.totalCount === 'number' ? r.totalCount : null };
+  return {
+    items: (r.items ?? []).map(normalizeMediaItem),
+    nextOffset: r.nextOffset,
+    totalCount: typeof r.totalCount === 'number' ? r.totalCount : null,
+  };
 }
 
 export async function fetchTimelineDays(opts: {
@@ -118,6 +161,7 @@ export async function fetchTimelineDays(opts: {
   from?: string;
   to?: string;
   archived?: 'all' | 'yes' | 'no';
+  deleted?: 'all' | 'yes' | 'no';
   favorite?: boolean;
 }): Promise<{ items: TimelineDay[]; totalCount: number | null }> {
   const params = new URLSearchParams();
@@ -132,6 +176,7 @@ export async function fetchTimelineDays(opts: {
   if (opts.from?.trim()) params.set('from', opts.from.trim());
   if (opts.to?.trim()) params.set('to', opts.to.trim());
   if (opts.archived && opts.archived !== 'all') params.set('archived', opts.archived);
+  if (opts.deleted && opts.deleted !== 'all') params.set('deleted', opts.deleted);
   if (opts.favorite) params.set('favorite', '1');
   const r = await apiGet<{ ok: true; items: TimelineDay[]; totalCount?: number }>(`/api/media/days?${params}`);
   return { items: r.items ?? [], totalCount: typeof r.totalCount === 'number' ? r.totalCount : null };
@@ -178,6 +223,10 @@ export async function undeleteMedia(mediaId: number) {
   return apiPost(`/api/media/${mediaId}/undelete`, {});
 }
 
+export async function purgeMedia(mediaId: number) {
+  return apiPost(`/api/media/${mediaId}/purge`, {});
+}
+
 export async function rateMedia(mediaId: number, rating: number) {
   return apiPost(`/api/media/${mediaId}/rate`, { rating });
 }
@@ -212,13 +261,54 @@ export async function importLocalFolder(input: { path: string; recursive?: boole
   );
 }
 
-export async function fetchSettings(): Promise<{ libraryRoot: string | null; archiveTemplate: string | null }> {
-  const r = await apiGet<{ ok: true; libraryRoot: string | null; archiveTemplate?: string | null }>(`/api/settings`);
-  return { libraryRoot: r.libraryRoot ?? null, archiveTemplate: r.archiveTemplate ?? null };
+export async function fetchSettings(): Promise<{
+  libraryRoot: string | null;
+  archiveTemplate: string | null;
+  trashRetentionDays: number;
+  trashAutoCleanupEnabled: boolean;
+}> {
+  const r = await apiGet<{
+    ok: true;
+    libraryRoot: string | null;
+    archiveTemplate?: string | null;
+    trashRetentionDays?: number | null;
+    trashAutoCleanupEnabled?: boolean | null;
+  }>(`/api/settings`);
+  return {
+    libraryRoot: r.libraryRoot ?? null,
+    archiveTemplate: r.archiveTemplate ?? null,
+    trashRetentionDays: typeof r.trashRetentionDays === 'number' ? r.trashRetentionDays : 30,
+    trashAutoCleanupEnabled: r.trashAutoCleanupEnabled ?? true,
+  };
 }
 
-export async function saveSettings(input: { libraryRoot?: string | null; archiveTemplate?: string | null }) {
-  return apiPost<{ ok: true; libraryRoot: string | null; archiveTemplate: string | null }>(`/api/settings`, input);
+export async function saveSettings(input: {
+  libraryRoot?: string | null;
+  archiveTemplate?: string | null;
+  trashRetentionDays?: number | null;
+  trashAutoCleanupEnabled?: boolean | null;
+}) {
+  return apiPost<{
+    ok: true;
+    libraryRoot: string | null;
+    archiveTemplate: string | null;
+    trashRetentionDays: number;
+    trashAutoCleanupEnabled: boolean;
+  }>(`/api/settings`, input);
+}
+
+export async function pruneTrash(days?: number) {
+  return apiPost<{
+    ok: true;
+    retentionDays: number;
+    result: {
+      scannedRows: number;
+      deletedRows: number;
+      deletedFiles: number;
+      queuedDeletes: number;
+      missingFiles: number;
+    };
+  }>(`/api/maintenance/trash/prune`, typeof days === 'number' ? { days } : {});
 }
 
 export async function fetchSimilarMedia(
@@ -230,5 +320,5 @@ export async function fetchSimilarMedia(
   if (opts?.distance) params.set('distance', String(opts.distance));
   const qs = params.toString();
   const r = await apiGet<{ ok: true; items: MediaItem[] }>(`/api/media/${mediaId}/similar${qs ? `?${qs}` : ''}`);
-  return r.items ?? [];
+  return (r.items ?? []).map(normalizeMediaItem);
 }

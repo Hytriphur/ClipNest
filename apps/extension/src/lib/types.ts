@@ -12,7 +12,7 @@ export type ExtractResult = {
   items: IngestItem[];
 };
 
-export type SiteId = 'x' | 'pixiv' | 'duitang' | 'other';
+export type SiteId = 'x' | 'pixiv' | 'duitang' | 'xiaohongshu' | 'baidu' | 'google' | 'other';
 
 export type IngestContext = {
   site?: SiteId;

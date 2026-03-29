@@ -13,11 +13,32 @@ const distDir = path.join(root, 'dist');
 
 const watch = process.argv.includes('--watch');
 
-fs.rmSync(distDir, { recursive: true, force: true });
 fs.mkdirSync(distDir, { recursive: true });
 
+function copyStaticEntry(src, dest, label) {
+  const stat = fs.statSync(src);
+  if (stat.isDirectory()) {
+    fs.mkdirSync(dest, { recursive: true });
+    for (const child of fs.readdirSync(src)) {
+      copyStaticEntry(path.join(src, child), path.join(dest, child), `${label}/${child}`);
+    }
+    return;
+  }
+
+  try {
+    fs.copyFileSync(src, dest);
+  } catch (err) {
+    if (err && typeof err === 'object' && 'code' in err && err.code === 'EPERM') {
+      // eslint-disable-next-line no-console
+      console.warn(`[extension build] skip locked static file: ${label}`);
+      return;
+    }
+    throw err;
+  }
+}
+
 for (const file of fs.readdirSync(staticDir)) {
-  fs.copyFileSync(path.join(staticDir, file), path.join(distDir, file));
+  copyStaticEntry(path.join(staticDir, file), path.join(distDir, file), file);
 }
 
 const common = {
@@ -84,4 +105,3 @@ const ctx = await esbuild.context({
 await ctx.watch();
 // eslint-disable-next-line no-console
 console.log('[extension] watching...');
-
