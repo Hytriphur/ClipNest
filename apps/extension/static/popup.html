@@ -357,6 +357,40 @@
         font-size: 11px;
       }
 
+      .launcher-bar {
+        padding: 11px 12px;
+        display: grid;
+        gap: 9px;
+      }
+
+      .launcher-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .launcher-url {
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 10px;
+        color: var(--accent);
+        word-break: break-all;
+      }
+
+      .launcher-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      button.small {
+        min-height: 42px;
+        border-radius: 14px;
+        padding: 0 11px;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
       .site-stack {
         margin-top: 12px;
         display: grid;
@@ -404,6 +438,13 @@
 
       button:hover {
         transform: translateY(-1px) scale(1.01);
+      }
+
+      button:disabled {
+        opacity: 0.58;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
       }
 
       button.primary {
@@ -527,6 +568,19 @@
         </div>
       </section>
 
+      <section class="card launcher-bar">
+        <div class="launcher-top">
+          <div class="section-title">Launcher</div>
+          <span class="pill" id="launcherStatus" data-tone="muted">检测中</span>
+        </div>
+        <code class="launcher-url" id="launcherUrl">http://127.0.0.1:5180</code>
+        <div class="hint" id="launcherHint">用于一键启动/重启后端</div>
+        <div class="launcher-actions">
+          <button class="secondary small" id="btnStartServer" type="button" disabled>启动后端</button>
+          <button class="secondary small" id="btnRestartServer" type="button" disabled>重启后端</button>
+        </div>
+      </section>
+
       <div class="actions">
         <button class="primary" id="btnOpenLibrary" type="button">
           <span class="button-title">打开图库</span>
@@ -546,6 +600,7 @@
           <span class="chip" data-site-chip="xiaohongshu" data-active="false">小红书</span>
           <span class="chip" data-site-chip="baidu" data-active="false">百度图片</span>
           <span class="chip" data-site-chip="google" data-active="false">Google 图片</span>
+          <span class="chip" data-site-chip="youtube" data-active="false">YouTube</span>
         </div>
         <div class="mini-hint">站内点保存</div>
       </section>

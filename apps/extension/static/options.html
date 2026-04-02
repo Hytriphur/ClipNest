@@ -25,7 +25,7 @@
         font: 14px/1.45 "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
       }
       .wrap {
-        max-width: 900px;
+        max-width: 920px;
         margin: 0 auto;
         padding: 18px;
         display: grid;
@@ -55,7 +55,7 @@
         padding: 10px 12px;
         border-radius: 12px;
         border: 1px solid var(--border);
-        background: rgba(255,255,255,0.9);
+        background: rgba(255, 255, 255, 0.9);
         color: var(--text);
         outline: none;
       }
@@ -78,24 +78,40 @@
         box-shadow: 0 12px 26px rgba(15, 23, 42, 0.12);
         transform: translateY(-1px);
       }
-      .muted { color: var(--muted); font-size: 12px; }
-      code { color: var(--accent); }
-      .targets { display: grid; gap: 8px; margin-top: 10px; }
-      .targetRow { display: grid; grid-template-columns: 1fr 120px; gap: 8px; }
-      .actions { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+      .muted {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      code {
+        color: var(--accent);
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+        margin-top: 10px;
+        flex-wrap: wrap;
+      }
     </style>
   </head>
   <body>
     <div class="wrap">
       <div class="card">
         <h1>ClipNest 采集助手设置</h1>
-        <div class="muted">采集只在已登录的浏览器内进行，不保存任何账号凭据。</div>
+        <div class="muted">采集只在你已登录的浏览器环境内运行，不会保存站点账号密码。</div>
       </div>
 
       <div class="card">
         <div class="row">
-          <div>本地服务地址</div>
+          <div>后端服务地址</div>
           <input id="serverUrl" placeholder="http://localhost:5174" />
+        </div>
+        <div class="row">
+          <div>Launcher 地址</div>
+          <input id="launcherUrl" placeholder="http://127.0.0.1:5180" />
+        </div>
+        <div class="row">
+          <div>Launcher Token</div>
+          <input id="launcherToken" placeholder="可选，留空表示不启用鉴权" />
         </div>
         <div class="row">
           <div>最大滚动次数</div>

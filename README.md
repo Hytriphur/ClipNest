@@ -13,6 +13,7 @@ ClipNest is a local-first image and video collector for X and other sites. The e
 - `apps/server`: local HTTP API + downloader + thumbnails + SQLite
 - `apps/web`: local library UI
 - `apps/extension`: Chromium MV3 extension
+- `apps/launcher`: local launcher API (start/restart server from extension)
 
 ## Quick Start
 1. Install deps
@@ -23,7 +24,11 @@ npm install
 ```
 npm run dev
 ```
-3. Build and load the extension
+3. Start launcher (new terminal)
+```
+npm run dev:launcher
+```
+4. Build and load the extension
 ```
 npm run build -w apps/extension
 ```
@@ -32,11 +37,20 @@ Open Chrome or Edge extensions page, enable Developer mode, load `apps/extension
 Default ports
 - Server: `http://localhost:5174`
 - Web UI: `http://localhost:5173`
+- Launcher: `http://127.0.0.1:5180`
 
 Health check
 ```
 curl http://localhost:5174/api/health
 ```
+Launcher check
+```
+curl http://127.0.0.1:5180/api/health
+```
+
+Extension launcher buttons
+- Open extension popup and use `启动后端` or `重启后端`
+- Configure launcher URL/token in extension options if you changed defaults
 
 ## Data Directory
 Default managed data directory

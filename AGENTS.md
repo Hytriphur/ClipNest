@@ -18,6 +18,7 @@ Build a **local-first** product to help users explore and quickly save images/GI
 - `apps/server`: local HTTP API + downloader + thumbnails + SQLite
 - `apps/web`: local library UI (React + Vite)
 - `apps/extension`: Chrome/Edge MV3 extension (collector + task runner)
+- `apps/launcher`: local launcher API for one-click start/restart from extension popup
 
 ## Environment Requirements
 - Node `v22.x` (current dev machine: `v22.13.0`)
@@ -67,13 +68,16 @@ To reduce risk:
    - `npm install`
 2. Start server + web UI:
    - `npm run dev`
-3. Load extension:
+3. Start launcher (optional but recommended for popup one-click start/restart):
+   - `npm run dev:launcher`
+4. Load extension:
    - Build once: `npm run build -w apps/extension`
    - In Chrome/Edge: Extensions -> Developer mode -> Load unpacked -> select `apps/extension/dist`
 
 Default ports:
 - Server: `http://localhost:5174`
 - Web UI: `http://localhost:5173`
+- Launcher: `http://127.0.0.1:5180`
 
 ## Conventions
 - TypeScript strict mode

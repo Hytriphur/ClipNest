@@ -20,11 +20,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clipnest-autostart
 ```
 3. Verify
 ```powershell
-Get-ScheduledTask -TaskName "ClipNest Server","ClipNest Web" | Select-Object TaskName,State
+Get-ScheduledTask -TaskName "ClipNest Server","ClipNest Web","ClipNest Launcher" | Select-Object TaskName,State
 ```
 4. Health check
 ```powershell
 Invoke-RestMethod http://localhost:5174/api/health
+Invoke-RestMethod http://127.0.0.1:5180/api/health
 ```
 
 Open web UI:
@@ -39,11 +40,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clipnest-autostart
 ### Logs
 - `logs/server.log`
 - `logs/web.log`
+- `logs/launcher.log` (if launcher is started with script)
+
+## Launcher (for extension one-click start/restart)
+Run launcher manually:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\clipnest-run-launcher.ps1
+```
+
+Default launcher endpoint:
+- `http://127.0.0.1:5180`
+
+Health check:
+```powershell
+Invoke-RestMethod http://127.0.0.1:5180/api/health
+```
+
+Optional token auth:
+- set env var `LAUNCHER_TOKEN` before starting launcher
+- then fill the same token in extension settings (`Launcher Token`)
 
 ### Remove tasks
 ```powershell
 Unregister-ScheduledTask -TaskName "ClipNest Server" -Confirm:$false
 Unregister-ScheduledTask -TaskName "ClipNest Web" -Confirm:$false
+Unregister-ScheduledTask -TaskName "ClipNest Launcher" -Confirm:$false
 ```
 
 ### Troubleshooting

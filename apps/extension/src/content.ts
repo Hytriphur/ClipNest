@@ -103,7 +103,17 @@ const QUEUE_BAR_INNER_CLASS = 'xic-queue-bar-inner';
 const QUEUE_TOGGLE_CLASS = 'xic-queue-toggle';
 const QUEUE_TOGGLE_TEXT_CLASS = 'xic-queue-toggle-text';
 const QUEUE_TOGGLE_COUNT_CLASS = 'xic-queue-toggle-count';
-const DEBUG = false;
+const DEBUG = (() => {
+  try {
+    const fromQuery = new URLSearchParams(location.search).get('clipnest_debug');
+    if (fromQuery === '1' || String(fromQuery).toLowerCase() === 'true') return true;
+    const fromStorage = window.localStorage?.getItem('clipnest_debug');
+    if (fromStorage === '1' || String(fromStorage).toLowerCase() === 'true') return true;
+  } catch {
+    // ignore
+  }
+  return false;
+})();
 const DEFAULT_SERVER_URL = 'http://localhost:5174';
 const PROGRESS_POLL_INTERVAL_MS = 800;
 const PROGRESS_MAX_AGE_MS = 15 * 60 * 1000;
@@ -138,14 +148,16 @@ function injectStyles() {
     }
     .${BTN_WRAPPER_CLASS}[data-site="pixiv"],
     .${BTN_WRAPPER_CLASS}[data-site="x"],
-    .${BTN_WRAPPER_CLASS}[data-site="xiaohongshu"] {
+    .${BTN_WRAPPER_CLASS}[data-site="xiaohongshu"],
+    .${BTN_WRAPPER_CLASS}[data-site="youtube"] {
       opacity: 0;
       transform: translateY(-4px) scale(0.98);
       pointer-events: none;
     }
     .${HOST_CLASS}:hover > .${BTN_WRAPPER_CLASS}[data-site="pixiv"],
     .${HOST_CLASS}:hover > .${BTN_WRAPPER_CLASS}[data-site="x"],
-    .${HOST_CLASS}:hover > .${BTN_WRAPPER_CLASS}[data-site="xiaohongshu"] {
+    .${HOST_CLASS}:hover > .${BTN_WRAPPER_CLASS}[data-site="xiaohongshu"],
+    .${HOST_CLASS}:hover > .${BTN_WRAPPER_CLASS}[data-site="youtube"] {
       opacity: 1;
       transform: translateY(0) scale(1);
       pointer-events: auto;
@@ -166,6 +178,12 @@ function injectStyles() {
       top: 8px;
       right: 8px;
       left: auto;
+      bottom: auto;
+    }
+    .${BTN_WRAPPER_CLASS}[data-site="youtube"][data-role="single"] {
+      top: 10px;
+      left: 10px;
+      right: auto;
       bottom: auto;
     }
     .${BTN_WRAPPER_CLASS}[data-site="pixiv"][data-role="group"],
@@ -193,7 +211,8 @@ function injectStyles() {
     }
     .${BTN_CLASS}[data-site="pixiv"],
     .${BTN_CLASS}[data-site="x"],
-    .${BTN_CLASS}[data-site="xiaohongshu"] {
+    .${BTN_CLASS}[data-site="xiaohongshu"],
+    .${BTN_CLASS}[data-site="youtube"] {
       font-size: 9px;
       padding: 3px 6px;
       border-radius: 10px;
@@ -549,6 +568,965 @@ function isXiaohongshuDetailUrl(href = location.href): boolean {
   }
 }
 
+function isYouTubeDetailUrl(href = location.href): boolean {
+  try {
+    const u = new URL(href);
+    const host = u.hostname.toLowerCase();
+    if (!(host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be' || host.endsWith('.youtu.be'))) {
+      return false;
+    }
+    if (host === 'youtu.be' || host.endsWith('.youtu.be')) return true;
+    if (u.pathname.startsWith('/watch')) return Boolean(u.searchParams.get('v'));
+    if (/^\/shorts\/[^/]+/i.test(u.pathname)) return true;
+    if (/^\/live\/[^/]+/i.test(u.pathname)) return true;
+    return false;
+  } catch {
+    return /youtube\.com\/watch\?/.test(href) || /youtube\.com\/shorts\//.test(href) || /youtu\.be\//.test(href);
+  }
+}
+
+function extractYouTubeVideoIdFromUrl(href = location.href): string | null {
+  try {
+    const u = new URL(href);
+    const host = u.hostname.toLowerCase();
+    if (host === 'youtu.be' || host.endsWith('.youtu.be')) {
+      const seg = u.pathname.split('/').filter(Boolean)[0];
+      return seg ? seg.trim() : null;
+    }
+    const v = u.searchParams.get('v');
+    if (v) return v.trim();
+    const shorts = u.pathname.match(/^\/shorts\/([^/?#]+)/i);
+    if (shorts?.[1]) return shorts[1].trim();
+    const live = u.pathname.match(/^\/live\/([^/?#]+)/i);
+    if (live?.[1]) return live[1].trim();
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function normalizeYouTubeWatchUrl(videoId?: string | null): string {
+  const id = String(videoId ?? '').trim();
+  if (id) return `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
+  return location.href;
+}
+
+function sanitizeDisplayName(value: string): string {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return 'youtube-video';
+  const sanitized = trimmed.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!sanitized) return 'youtube-video';
+  return sanitized.slice(0, 96);
+}
+
+function extractJsonObjectAfterMarker(text: string, marker: string): string | null {
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex < 0) return null;
+  let start = markerIndex + marker.length;
+  while (start < text.length && text[start] !== '{') start += 1;
+  if (start >= text.length || text[start] !== '{') return null;
+
+  let depth = 0;
+  let inString = false;
+  let quoteChar = '';
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i]!;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quoteChar) {
+        inString = false;
+        quoteChar = '';
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      quoteChar = ch;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+function parseJsonObjectAfterMarker(text: string, marker: string): any | null {
+  const raw = extractJsonObjectAfterMarker(text, marker);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+type YouTubeStream = {
+  url: string;
+  mimeType: string;
+  container: string;
+  mediaKind: 'video' | 'audio' | 'other';
+  itag?: number;
+  bitrate?: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  qualityLabel?: string;
+  hasAudio: boolean;
+};
+
+function isBlockedYouTubePlaybackUrl(rawUrl: string): boolean {
+  const raw = String(rawUrl ?? '').trim();
+  if (!raw) return false;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    if (host === 'redirector.googlevideo.com' || host.endsWith('.redirector.googlevideo.com')) {
+      return true;
+    }
+    const isGoogleVideo = host === 'googlevideo.com' || host.endsWith('.googlevideo.com');
+    if (!isGoogleVideo || !path.includes('videoplayback')) return false;
+    const client = (u.searchParams.get('c') ?? '').trim().toUpperCase();
+    const sabr = (u.searchParams.get('sabr') ?? '').trim();
+    return client === 'WEB' && sabr === '1';
+  } catch {
+    return false;
+  }
+}
+
+function isYouTubeManifestLikeUrl(rawUrl: string): boolean {
+  const raw = String(rawUrl ?? '').trim();
+  if (!raw || !isHttpUrl(raw)) return false;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    const query = u.search.toLowerCase();
+    const isYouTubeHost =
+      host === 'youtube.com' ||
+      host.endsWith('.youtube.com') ||
+      host === 'googlevideo.com' ||
+      host.endsWith('.googlevideo.com');
+    if (!isYouTubeHost) return false;
+    if (/\.(?:m3u8|mpd)(?:$|[?#])/i.test(raw)) return true;
+    if (/\/manifest\/|\/api\/manifest\//i.test(path)) return true;
+    if (/[?&](?:manifest|playlist|hls|dash)=/i.test(query)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function isYouTubeMediaCandidateUrl(rawUrl: string): boolean {
+  const raw = String(rawUrl ?? '').trim();
+  if (!raw || !isHttpUrl(raw)) return false;
+  if (isBlockedYouTubePlaybackUrl(raw)) return false;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    const query = u.search.toLowerCase();
+    const isGoogleVideo = host === 'googlevideo.com' || host.endsWith('.googlevideo.com');
+    const isYouTubeHost = host === 'youtube.com' || host.endsWith('.youtube.com');
+    if (isGoogleVideo) {
+      return /videoplayback|manifest|\.m3u8|\.mpd/i.test(`${path}${query}`);
+    }
+    if (isYouTubeHost) {
+      return /\/manifest\/|\/api\/manifest\/|\.m3u8|\.mpd/i.test(`${path}${query}`);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function collectYouTubeManifestUrls(response: any): string[] {
+  const normalized = normalizeYouTubePlayerResponse(response);
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw?: string | null) => {
+    const value = String(raw ?? '').trim();
+    if (!value || !isYouTubeMediaCandidateUrl(value)) return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    urls.push(value);
+  };
+  if (normalized?.streamingData) {
+    push(normalized.streamingData.dashManifestUrl);
+    push(normalized.streamingData.hlsManifestUrl);
+  }
+  return urls;
+}
+
+function resolveYouTubeStreamUrl(raw: any): { url?: string; needsDecipher: boolean } {
+  const directUrl = typeof raw?.url === 'string' ? raw.url.trim() : '';
+  if (directUrl) {
+    return isYouTubeMediaCandidateUrl(directUrl) ? { url: directUrl, needsDecipher: false } : { needsDecipher: false };
+  }
+
+  const cipher = typeof raw?.signatureCipher === 'string' ? raw.signatureCipher : typeof raw?.cipher === 'string' ? raw.cipher : '';
+  if (!cipher) return { needsDecipher: false };
+  try {
+    const params = new URLSearchParams(cipher);
+    const base = params.get('url');
+    if (!base) return { needsDecipher: false };
+    const sig = params.get('sig') || params.get('signature');
+    const encrypted = params.get('s');
+    if (!sig && encrypted) {
+      return { needsDecipher: true };
+    }
+    const sp = params.get('sp') || 'signature';
+    const u = new URL(base);
+    if (sig) u.searchParams.set(sp, sig);
+    const resolvedUrl = u.toString();
+    return isYouTubeMediaCandidateUrl(resolvedUrl) ? { url: resolvedUrl, needsDecipher: false } : { needsDecipher: false };
+  } catch {
+    return { needsDecipher: false };
+  }
+}
+
+function toYouTubeStream(raw: any): YouTubeStream | null {
+  const resolved = resolveYouTubeStreamUrl(raw);
+  if (!resolved.url || resolved.needsDecipher) return null;
+  const url = resolved.url.trim();
+  if (!isHttpUrl(url)) return null;
+
+  const mimeType = typeof raw?.mimeType === 'string' ? raw.mimeType : '';
+  const mimeMain = mimeType.split(';')[0]?.trim().toLowerCase() ?? '';
+  const [kind, subtype] = mimeMain.split('/');
+  const codecs = mimeType.match(/codecs="([^"]+)"/i)?.[1] ?? '';
+  const hasAudio =
+    Boolean(raw?.audioQuality) ||
+    Number(raw?.audioChannels ?? 0) > 0 ||
+    /mp4a|opus|vorbis|aac/i.test(codecs) ||
+    String(kind) === 'audio';
+
+  const mediaKind: 'video' | 'audio' | 'other' =
+    kind === 'video' ? 'video' : kind === 'audio' ? 'audio' : 'other';
+
+  return {
+    url,
+    mimeType,
+    container: String(subtype ?? '').trim().toLowerCase(),
+    mediaKind,
+    itag: Number.isFinite(Number(raw?.itag)) ? Number(raw.itag) : undefined,
+    bitrate: Number.isFinite(Number(raw?.bitrate)) ? Number(raw.bitrate) : undefined,
+    width: Number.isFinite(Number(raw?.width)) ? Number(raw.width) : undefined,
+    height: Number.isFinite(Number(raw?.height)) ? Number(raw.height) : undefined,
+    fps: Number.isFinite(Number(raw?.fps)) ? Number(raw.fps) : undefined,
+    qualityLabel: typeof raw?.qualityLabel === 'string' ? raw.qualityLabel : undefined,
+    hasAudio,
+  };
+}
+
+function rankYouTubeVideos(a: YouTubeStream, b: YouTubeStream): number {
+  const aMp4 = a.container === 'mp4' ? 1 : 0;
+  const bMp4 = b.container === 'mp4' ? 1 : 0;
+  if (bMp4 !== aMp4) return bMp4 - aMp4;
+  const aPx = (a.width ?? 0) * (a.height ?? 0);
+  const bPx = (b.width ?? 0) * (b.height ?? 0);
+  if (bPx !== aPx) return bPx - aPx;
+  const aFps = a.fps ?? 0;
+  const bFps = b.fps ?? 0;
+  if (bFps !== aFps) return bFps - aFps;
+  const aBitrate = a.bitrate ?? 0;
+  const bBitrate = b.bitrate ?? 0;
+  if (bBitrate !== aBitrate) return bBitrate - aBitrate;
+  const aWithAudio = a.hasAudio ? 1 : 0;
+  const bWithAudio = b.hasAudio ? 1 : 0;
+  return bWithAudio - aWithAudio;
+}
+
+function rankYouTubeAudios(a: YouTubeStream, b: YouTubeStream): number {
+  const aMp4 = a.container === 'mp4' ? 1 : 0;
+  const bMp4 = b.container === 'mp4' ? 1 : 0;
+  if (bMp4 !== aMp4) return bMp4 - aMp4;
+  const aBitrate = a.bitrate ?? 0;
+  const bBitrate = b.bitrate ?? 0;
+  return bBitrate - aBitrate;
+}
+
+function findYouTubePlayerResponse(doc: Document = document): any | null {
+  const markers = [
+    'ytInitialPlayerResponse =',
+    'var ytInitialPlayerResponse =',
+    'window["ytInitialPlayerResponse"] =',
+    'window.ytInitialPlayerResponse =',
+  ];
+
+  const scripts = Array.from(doc.querySelectorAll<HTMLScriptElement>('script'));
+  for (const script of scripts) {
+    const text = script.textContent ?? '';
+    if (!text) continue;
+    for (const marker of markers) {
+      if (!text.includes(marker)) continue;
+      const parsed = parseJsonObjectAfterMarker(text, marker);
+      if (parsed?.streamingData) return parsed;
+    }
+    if (text.includes('"playerResponse":')) {
+      const parsed = parseJsonObjectAfterMarker(text, '"playerResponse":');
+      if (parsed?.streamingData) return parsed;
+    }
+  }
+
+  const html = doc.documentElement?.innerHTML ?? '';
+  for (const marker of markers) {
+    if (!html.includes(marker)) continue;
+    const parsed = parseJsonObjectAfterMarker(html, marker);
+    if (parsed?.streamingData) return parsed;
+  }
+
+  return null;
+}
+
+function findYouTubePlayerHost(): HTMLElement | null {
+  const hostSelectors = ['#movie_player', 'ytd-player', 'ytd-reel-video-renderer', 'ytd-shorts-player'];
+  for (const selector of hostSelectors) {
+    const host = document.querySelector(selector);
+    if (host instanceof HTMLElement && isVisibleElement(host)) return host;
+  }
+  const video = document.querySelector('video.html5-main-video, ytd-reel-video-renderer video, ytd-player video');
+  if (video instanceof HTMLVideoElement) {
+    const host = video.closest('#movie_player, ytd-player, ytd-reel-video-renderer, ytd-shorts-player');
+    if (host instanceof HTMLElement) return host;
+    if (video.parentElement instanceof HTMLElement) return video.parentElement;
+  }
+  return null;
+}
+
+function extractYouTubeTags(playerResponse: any): string[] {
+  const set = new Set<string>();
+  const keywords = playerResponse?.videoDetails?.keywords;
+  if (Array.isArray(keywords)) {
+    for (const keyword of keywords) {
+      const tag = String(keyword ?? '').trim();
+      if (tag) set.add(tag);
+      if (set.size >= 40) break;
+    }
+  }
+  const metaKeywords = document.querySelector<HTMLMetaElement>('meta[name="keywords"]')?.content ?? '';
+  if (metaKeywords.trim()) {
+    for (const raw of metaKeywords.split(',')) {
+      const tag = raw.trim();
+      if (tag) set.add(tag);
+      if (set.size >= 40) break;
+    }
+  }
+  return Array.from(set);
+}
+
+function normalizeYouTubePlayerResponse(candidate: any): any | null {
+  if (!candidate) return null;
+
+  const tryParse = (value: any): any | null => {
+    if (!value) return null;
+    if (typeof value === 'object') return value;
+    if (typeof value !== 'string') return null;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  };
+
+  const direct = tryParse(candidate);
+  if (direct?.streamingData) return direct;
+  if (direct?.playerResponse) {
+    const nested = tryParse(direct.playerResponse);
+    if (nested?.streamingData) return nested;
+  }
+  return null;
+}
+
+function buildYouTubeVideoItemsFromResponse(response: any): IngestItem[] {
+  const normalized = normalizeYouTubePlayerResponse(response);
+  if (!normalized) return [];
+  const responseObj = normalized;
+  const streamingData = responseObj?.streamingData;
+  if (!streamingData) return [];
+
+  const formats = Array.isArray(streamingData?.formats) ? streamingData.formats : [];
+  const adaptiveFormats = Array.isArray(streamingData?.adaptiveFormats) ? streamingData.adaptiveFormats : [];
+  const allRaw = [...formats, ...adaptiveFormats];
+  const streams = allRaw.map((raw) => toYouTubeStream(raw)).filter(Boolean) as YouTubeStream[];
+  const dashManifestUrlRaw = typeof streamingData?.dashManifestUrl === 'string' ? streamingData.dashManifestUrl.trim() : '';
+  const dashManifestUrl = isHttpUrl(dashManifestUrlRaw) ? dashManifestUrlRaw : '';
+  const hlsManifestUrlRaw = typeof streamingData?.hlsManifestUrl === 'string' ? streamingData.hlsManifestUrl.trim() : '';
+  const hlsManifestUrl = isHttpUrl(hlsManifestUrlRaw) ? hlsManifestUrlRaw : '';
+
+  const videoStreams = streams.filter((stream) => stream.mediaKind === 'video').sort(rankYouTubeVideos);
+  const primaryVideo = videoStreams[0];
+
+  const audioStreams = streams.filter((stream) => stream.mediaKind === 'audio').sort(rankYouTubeAudios);
+  const primaryAudio = primaryVideo && !primaryVideo.hasAudio ? audioStreams[0] : undefined;
+  const alternateVideoUrls = videoStreams
+    .slice(primaryVideo ? 1 : 0)
+    .map((stream) => stream.url)
+    .filter((url) => url && url !== primaryVideo?.url)
+    .slice(0, 8);
+  const alternateAudioUrls = audioStreams
+    .slice(primaryAudio ? 1 : 0)
+    .map((stream) => stream.url)
+    .filter((url) => url && url !== primaryAudio?.url)
+    .slice(0, 6);
+
+  const videoId = String(responseObj?.videoDetails?.videoId ?? '').trim() || extractYouTubeVideoIdFromUrl(location.href);
+  const sourceUrl = normalizeYouTubeWatchUrl(videoId);
+  const title = String(responseObj?.videoDetails?.title ?? document.title ?? '').trim();
+  const author = String(responseObj?.videoDetails?.author ?? '').trim() || undefined;
+  const qualityLabel = primaryVideo?.qualityLabel ?? (dashManifestUrl ? 'DASH' : hlsManifestUrl ? 'HLS' : undefined);
+  const tags = extractYouTubeTags(responseObj);
+  const resolvedMediaUrl = dashManifestUrl || hlsManifestUrl || primaryVideo?.url;
+  if (!resolvedMediaUrl || !isHttpUrl(resolvedMediaUrl)) return [];
+  const mergedAlternateVideoUrls: string[] = [];
+  const pushAltVideoUrl = (url?: string | null) => {
+    const value = String(url ?? '').trim();
+    if (!value || value === resolvedMediaUrl || mergedAlternateVideoUrls.includes(value)) return;
+    mergedAlternateVideoUrls.push(value);
+  };
+  pushAltVideoUrl(dashManifestUrl);
+  pushAltVideoUrl(hlsManifestUrl);
+  pushAltVideoUrl(primaryVideo?.url);
+  alternateVideoUrls.forEach((url) => pushAltVideoUrl(url));
+  const displayName = sanitizeDisplayName(
+    `${title || videoId || 'youtube-video'}${qualityLabel ? `_${qualityLabel}` : ''}.mp4`,
+  );
+
+  return [
+    {
+      sourcePageUrl: sourceUrl,
+      tweetUrl: sourceUrl,
+      authorHandle: author,
+      mediaUrl: resolvedMediaUrl,
+      mediaType: 'video',
+      collectedAt: new Date().toISOString(),
+      context: {
+        site: 'youtube',
+        referer: location.href,
+        pageTitle: title || undefined,
+        tags,
+        alternateMediaUrls: mergedAlternateVideoUrls,
+        youtubeAudioUrl: primaryAudio?.url,
+        youtubeAudioAltUrls: alternateAudioUrls,
+        youtubeQualityLabel: qualityLabel,
+        displayName,
+      },
+    },
+  ];
+}
+
+function findYouTubeVideoElementUrl(targetEl: Element): string | null {
+  const videos = new Set<HTMLVideoElement>();
+  if (targetEl instanceof HTMLVideoElement) videos.add(targetEl);
+  targetEl.querySelectorAll?.('video').forEach((video) => {
+    if (video instanceof HTMLVideoElement) videos.add(video);
+  });
+  document.querySelectorAll('video.html5-main-video, ytd-player video, ytd-shorts-player video').forEach((video) => {
+    if (video instanceof HTMLVideoElement) videos.add(video);
+  });
+
+  const candidates: string[] = [];
+  for (const video of videos) {
+    const push = (raw?: string | null) => {
+      const value = String(raw ?? '').trim();
+      if (!value || value.startsWith('blob:') || value.startsWith('data:')) return;
+      if (isYouTubeMediaCandidateUrl(value)) candidates.push(value);
+    };
+    push(video.currentSrc);
+    push(video.src);
+    Array.from(video.querySelectorAll('source')).forEach((source) => push((source as HTMLSourceElement).src));
+  }
+
+  if (!candidates.length) return null;
+  const best =
+    candidates.find((url) => isYouTubeManifestLikeUrl(url)) ??
+    candidates.find((url) => /googlevideo\.com/i.test(url)) ??
+    candidates[0];
+  return best && isHttpUrl(best) ? best : null;
+}
+
+type YouTubePerfMedia = {
+  url: string;
+  kind: 'video' | 'audio' | 'other';
+  qualityLabel?: string;
+  contentLength?: number;
+  ts: number;
+};
+
+const YOUTUBE_AUDIO_ITAGS = new Set([
+  139, 140, 141, 171, 172, 249, 250, 251, 256, 258, 325, 328, 599, 600,
+]);
+
+function normalizeYouTubePlaybackUrl(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl);
+    // Keep signed params intact; only drop explicit byte range so server can request full payload.
+    // Removing signed params like `rqh` can cause 403 on googlevideo URLs.
+    u.searchParams.delete('range');
+    return u.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
+function parseYouTubePerfKind(url: URL): 'video' | 'audio' | 'other' {
+  const mimeRaw = decodeURIComponent(url.searchParams.get('mime') ?? url.searchParams.get('type') ?? '').toLowerCase();
+  if (mimeRaw.startsWith('audio/')) return 'audio';
+  if (mimeRaw.startsWith('video/')) return 'video';
+  const itag = Number(url.searchParams.get('itag') ?? NaN);
+  if (Number.isFinite(itag) && YOUTUBE_AUDIO_ITAGS.has(itag)) return 'audio';
+  if (url.pathname.toLowerCase().includes('videoplayback')) return 'video';
+  if (
+    url.pathname.toLowerCase().includes('.m3u8') ||
+    url.pathname.toLowerCase().includes('.mpd') ||
+    url.pathname.toLowerCase().includes('/manifest/')
+  ) {
+    return 'video';
+  }
+  return 'other';
+}
+
+function parseYouTubeMediaFromUrl(rawUrl: string, ts = Date.now()): YouTubePerfMedia | null {
+  const raw = String(rawUrl ?? '').trim();
+  if (!raw) return null;
+  if (!isYouTubeMediaCandidateUrl(raw)) return null;
+  try {
+    const u = new URL(raw);
+    const qualityLabelRaw = u.searchParams.get('quality_label') ?? u.searchParams.get('quality') ?? '';
+    const clen = Number(u.searchParams.get('clen') ?? NaN);
+    return {
+      url: normalizeYouTubePlaybackUrl(raw),
+      kind: parseYouTubePerfKind(u),
+      qualityLabel: qualityLabelRaw ? qualityLabelRaw.trim() : undefined,
+      contentLength: Number.isFinite(clen) && clen > 0 ? clen : undefined,
+      ts,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function collectYouTubeMediaFromPerformance(maxAgeMs = 60_000): YouTubePerfMedia[] {
+  const now = performance.now();
+  const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+  const dedup = new Map<string, YouTubePerfMedia>();
+
+  for (const entry of entries) {
+    const raw = String((entry as any)?.name ?? '').trim();
+    if (!raw) continue;
+    const age = now - (Number.isFinite(entry.responseEnd) ? entry.responseEnd : now);
+    if (Number.isFinite(age) && age > maxAgeMs) continue;
+    const media = parseYouTubeMediaFromUrl(raw, Date.now() - Math.max(0, age));
+    if (!media) continue;
+    const key = `${media.kind}|${media.url}`;
+    const existing = dedup.get(key);
+    if (!existing || (media.contentLength ?? 0) > (existing.contentLength ?? 0)) {
+      dedup.set(key, media);
+    }
+  }
+
+  return Array.from(dedup.values());
+}
+
+function qualityLabelScore(label?: string): number {
+  const raw = String(label ?? '').trim().toLowerCase();
+  if (!raw) return 0;
+  const p = raw.match(/(\d{3,4})p/i);
+  if (p?.[1]) return Number(p[1]);
+  const hd = raw.match(/(\d{3,4})/);
+  if (hd?.[1]) return Number(hd[1]);
+  if (raw.includes('high')) return 720;
+  if (raw.includes('medium')) return 480;
+  if (raw.includes('low')) return 360;
+  return 0;
+}
+
+function scoreYouTubePerfVideo(item: YouTubePerfMedia): number {
+  let score = 0;
+  if (/\.mpd(\?|$)|\/manifest\/dash(?:\/|$)|\/api\/manifest\/dash(?:\/|$)|[?&](?:manifest|dash)=/i.test(item.url)) {
+    score += 12000;
+  } else if (/\.m3u8(\?|$)|\/manifest\/hls(?:\/|$)|\/manifest\//i.test(item.url)) {
+    score += 10800;
+  }
+  if (/dash/i.test(item.url)) score += 1800;
+  if (/hls/i.test(item.url)) score += 1200;
+  if (/googlevideo\.com/i.test(item.url)) score += 1800;
+  if (/mime=video/i.test(item.url)) score += 1600;
+  if (/videoplayback/i.test(item.url)) score += 800;
+  score += qualityLabelScore(item.qualityLabel) * 8;
+  if (Number.isFinite(item.contentLength)) {
+    score += Math.min(280, Math.floor((item.contentLength ?? 0) / (1024 * 1024)));
+  }
+  return score;
+}
+
+function scoreYouTubePerfAudio(item: YouTubePerfMedia): number {
+  let score = 0;
+  if (/mime=audio/i.test(item.url)) score += 1800;
+  if (/googlevideo\.com/i.test(item.url)) score += 1000;
+  if (Number.isFinite(item.contentLength)) {
+    score += Math.min(240, Math.floor((item.contentLength ?? 0) / (1024 * 1024)));
+  }
+  return score;
+}
+
+function scoreYouTubePlayerResponse(response: any): number {
+  const normalized = normalizeYouTubePlayerResponse(response);
+  if (!normalized?.streamingData) return -100000;
+
+  let score = 0;
+  const manifests = collectYouTubeManifestUrls(normalized);
+  if (manifests.length) {
+    score += manifests.some((url) => /\.mpd(?:$|[?#])|\/manifest\/dash|\/api\/manifest\/dash/i.test(url)) ? 14000 : 0;
+    score += manifests.some((url) => /\.m3u8(?:$|[?#])|\/manifest\/hls|\/api\/manifest\/hls/i.test(url)) ? 13200 : 0;
+    score += manifests.length * 320;
+  }
+
+  const formats = Array.isArray(normalized?.streamingData?.formats) ? normalized.streamingData.formats : [];
+  const adaptiveFormats = Array.isArray(normalized?.streamingData?.adaptiveFormats) ? normalized.streamingData.adaptiveFormats : [];
+  const usableStreams = [...formats, ...adaptiveFormats]
+    .map((raw) => toYouTubeStream(raw))
+    .filter(Boolean) as YouTubeStream[];
+
+  const videos = usableStreams.filter((stream) => stream.mediaKind === 'video').sort(rankYouTubeVideos);
+  const audios = usableStreams.filter((stream) => stream.mediaKind === 'audio').sort(rankYouTubeAudios);
+  if (videos.length) {
+    score += 7200;
+    const bestVideo = videos[0];
+    if (bestVideo) {
+      score += (bestVideo.width ?? 0) * (bestVideo.height ?? 0) > 0 ? Math.min(2600, Math.floor(((bestVideo.width ?? 0) * (bestVideo.height ?? 0)) / 400)) : 0;
+      score += (bestVideo.fps ?? 0) * 4;
+      score += bestVideo.hasAudio ? 1200 : 0;
+    }
+  }
+  if (audios.length) score += 1800;
+  if (!videos.length && !manifests.length) return -100000;
+  return score;
+}
+
+function scoreYouTubeIngestItem(item: IngestItem): number {
+  let score = 0;
+  const mediaUrl = String(item.mediaUrl ?? '').trim();
+  const quality = typeof item.context?.youtubeQualityLabel === 'string' ? item.context.youtubeQualityLabel : undefined;
+  if (isYouTubeManifestLikeUrl(mediaUrl)) score += 16000;
+  if (/googlevideo\.com/i.test(mediaUrl)) score += 8200;
+  if (item.context?.youtubeAudioUrl) score += 2200;
+  if (Array.isArray(item.context?.alternateMediaUrls)) score += Math.min(item.context.alternateMediaUrls.length, 8) * 110;
+  score += qualityLabelScore(quality) * 8;
+  return score;
+}
+
+function chooseBestYouTubeItemSet(
+  groups: Array<{ label: string; items: IngestItem[] }>,
+): { label: string; items: IngestItem[] } | null {
+  let best: { label: string; items: IngestItem[] } | null = null;
+  let bestScore = -100000;
+  for (const group of groups) {
+    if (!group.items.length) continue;
+    const score = Math.max(...group.items.map((item) => scoreYouTubeIngestItem(item)));
+    if (!best || score > bestScore) {
+      best = group;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function findYouTubeMainVideo(targetEl: Element): HTMLVideoElement | null {
+  if (targetEl instanceof HTMLVideoElement) return targetEl;
+  const local = targetEl.querySelector('video.html5-main-video, video');
+  if (local instanceof HTMLVideoElement) return local;
+  const global = document.querySelector('video.html5-main-video, ytd-player video, ytd-shorts-player video');
+  return global instanceof HTMLVideoElement ? global : null;
+}
+
+async function nudgeYouTubePlayback(targetEl: Element): Promise<void> {
+  const video = findYouTubeMainVideo(targetEl);
+  if (!video) return;
+  if (!video.paused) {
+    await sleep(220);
+    return;
+  }
+  try {
+    video.muted = true;
+    const played = video.play();
+    if (played && typeof (played as Promise<void>).then === 'function') {
+      await Promise.race([played, sleep(450)]);
+    } else {
+      await sleep(220);
+    }
+    await sleep(420);
+    video.pause();
+  } catch {
+    // autoplay restrictions are expected on some contexts.
+  }
+}
+
+function buildYouTubeVideoItemsFromMediaCandidates(
+  candidates: YouTubePerfMedia[],
+  targetEl: Element,
+  playerResponse?: any | null,
+): IngestItem[] {
+  if (!candidates.length) return [];
+  const normalizedResponse = normalizeYouTubePlayerResponse(playerResponse);
+  const manifestItems: YouTubePerfMedia[] = collectYouTubeManifestUrls(normalizedResponse).map((url) => ({
+    url,
+    kind: 'video',
+    qualityLabel: /\.mpd(?:$|[?#])|\/manifest\/dash(?:\/|$)|\/api\/manifest\/dash(?:\/|$)|[?&](?:manifest|dash)=/i.test(url)
+      ? 'DASH'
+      : /hls|\.m3u8/i.test(url)
+        ? 'HLS'
+        : 'Manifest',
+    ts: Date.now(),
+  }));
+
+  const dedup = new Map<string, YouTubePerfMedia>();
+  for (const item of manifestItems) {
+    const key = `${item.kind}|${item.url}`;
+    dedup.set(key, item);
+  }
+  for (const item of candidates) {
+    if (!item?.url) continue;
+    const key = `${item.kind}|${item.url}`;
+    const existing = dedup.get(key);
+    if (!existing || (item.contentLength ?? 0) > (existing.contentLength ?? 0)) {
+      dedup.set(key, item);
+    }
+  }
+  const normalized = Array.from(dedup.values());
+
+  const videos = normalized.filter((item) => item.kind === 'video').sort((a, b) => scoreYouTubePerfVideo(b) - scoreYouTubePerfVideo(a));
+  if (!videos.length) return [];
+  const primaryVideo = videos[0]!;
+  const alternates = videos
+    .slice(1)
+    .map((item) => item.url)
+    .filter((url) => url && url !== primaryVideo.url)
+    .slice(0, 8);
+  const audios = normalized.filter((item) => item.kind === 'audio').sort((a, b) => scoreYouTubePerfAudio(b) - scoreYouTubePerfAudio(a));
+  const primaryAudio = audios[0];
+  const audioAlternates = audios
+    .slice(primaryAudio ? 1 : 0)
+    .map((item) => item.url)
+    .filter((url) => url && url !== primaryAudio?.url)
+    .slice(0, 6);
+
+  const details = normalizedResponse?.videoDetails ?? null;
+  const responseVideoId = String(details?.videoId ?? '').trim();
+  const videoId = responseVideoId || extractYouTubeVideoIdFromUrl(location.href);
+  const sourceUrl = normalizeYouTubeWatchUrl(videoId);
+  const title = String(details?.title ?? document.title ?? '').trim();
+  const qualityLabel = primaryVideo.qualityLabel;
+  const tags = extractYouTubeTags(normalizedResponse ?? null);
+  const displayName = sanitizeDisplayName(
+    `${title || videoId || 'youtube-video'}${qualityLabel ? `_${qualityLabel}` : ''}.mp4`,
+  );
+  const channelMeta =
+    document.querySelector<HTMLMetaElement>('meta[itemprop="author"]')?.content ??
+    document.querySelector<HTMLMetaElement>('meta[name="author"]')?.content ??
+    '';
+  const responseAuthor = String(details?.author ?? '').trim();
+  const authorHandle = responseAuthor || channelMeta.trim() || undefined;
+
+  const chosenTarget = findYouTubeMainVideo(targetEl);
+  const referer = location.href || sourceUrl;
+  const pageTitle = title || chosenTarget?.getAttribute('title') || undefined;
+
+  return [
+    {
+      sourcePageUrl: sourceUrl,
+      tweetUrl: sourceUrl,
+      authorHandle,
+      mediaUrl: primaryVideo.url,
+      mediaType: 'video',
+      collectedAt: new Date().toISOString(),
+      context: {
+        site: 'youtube',
+        referer,
+        pageTitle,
+        tags,
+        alternateMediaUrls: alternates,
+        youtubeAudioUrl: primaryAudio?.url,
+        youtubeAudioAltUrls: audioAlternates,
+        youtubeQualityLabel: qualityLabel,
+        displayName,
+      },
+    },
+  ];
+}
+
+function buildYouTubeVideoItemsFromPerformance(targetEl: Element, playerResponse?: any | null): IngestItem[] {
+  const perfItems = collectYouTubeMediaFromPerformance();
+  return buildYouTubeVideoItemsFromMediaCandidates(perfItems, targetEl, playerResponse);
+}
+
+async function requestYouTubeMediaFromBackground(): Promise<YouTubePerfMedia[]> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const r = await chrome.runtime.sendMessage({ type: 'XIC_GET_RECENT_YOUTUBE_MEDIA_URLS' });
+      const items = Array.isArray(r?.items) ? r.items : [];
+      const parsed = items
+        .map((raw: any) => {
+          const url = typeof raw?.url === 'string' ? raw.url : '';
+          const ts = Number.isFinite(raw?.ts) ? Number(raw.ts) : Date.now();
+          const media = parseYouTubeMediaFromUrl(url, ts);
+          if (!media) return null;
+          const kind = raw?.kind === 'video' || raw?.kind === 'audio' || raw?.kind === 'other' ? raw.kind : media.kind;
+          const contentLength = Number.isFinite(raw?.contentLength) ? Number(raw.contentLength) : media.contentLength;
+          const qualityLabel = typeof raw?.qualityLabel === 'string' ? raw.qualityLabel.trim() || undefined : media.qualityLabel;
+          return {
+            ...media,
+            kind,
+            contentLength,
+            qualityLabel,
+          } as YouTubePerfMedia;
+        })
+        .filter(Boolean) as YouTubePerfMedia[];
+      if (parsed.length) return parsed;
+    } catch {
+      // ignore and retry
+    }
+    if (attempt < 2) await sleep(280 + attempt * 220);
+  }
+  return [];
+}
+
+async function requestYouTubePlayerResponseFromBackground(): Promise<{ response: any | null; meta?: any }> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const r = await chrome.runtime.sendMessage({ type: 'XIC_YOUTUBE_GET_PLAYER_RESPONSE' });
+      const normalized = normalizeYouTubePlayerResponse(r?.response);
+      if (r?.ok && normalized) return { response: normalized, meta: r?.meta };
+    } catch {
+      // ignore and retry
+    }
+    if (attempt < 2) await sleep(450 + attempt * 350);
+  }
+  return { response: null };
+}
+
+async function extractYouTubeVideoItems(targetEl: Element): Promise<IngestItem[]> {
+  const trace: Array<Record<string, unknown>> = [];
+  const candidateGroups: Array<{ label: string; items: IngestItem[] }> = [];
+  const localResponse = findYouTubePlayerResponse(document);
+  const localScore = scoreYouTubePlayerResponse(localResponse);
+  trace.push({
+    stage: 'local-player-response',
+    hasResponse: Boolean(localResponse),
+    hasStreamingData: Boolean(localResponse?.streamingData),
+    score: localScore,
+  });
+
+  const localItems = buildYouTubeVideoItemsFromResponse(localResponse);
+  if (localItems.length) candidateGroups.push({ label: 'local-player-response', items: localItems });
+  trace.push({
+    stage: 'local-player-response-primary',
+    items: localItems.length,
+    score: localItems.length ? scoreYouTubeIngestItem(localItems[0]!) : -1,
+  });
+
+  const remotePayload = await requestYouTubePlayerResponseFromBackground();
+  const remoteResponse = remotePayload.response;
+  const remoteScore = scoreYouTubePlayerResponse(remoteResponse);
+  const remoteItems = buildYouTubeVideoItemsFromResponse(remoteResponse);
+  if (remoteItems.length) candidateGroups.push({ label: 'background-player-response', items: remoteItems });
+  trace.push({
+    stage: 'background-player-response-primary',
+    hasResponse: Boolean(remoteResponse),
+    items: remoteItems.length,
+    hasStreamingData: Boolean(remoteResponse?.streamingData),
+    score: remoteScore,
+    meta: remotePayload.meta ?? null,
+  });
+
+  const effectiveResponse = remoteScore > localScore ? remoteResponse : localResponse;
+
+  await nudgeYouTubePlayback(targetEl);
+  const perfItems = buildYouTubeVideoItemsFromPerformance(targetEl, effectiveResponse);
+  if (perfItems.length) candidateGroups.push({ label: 'performance-fallback', items: perfItems });
+  trace.push({
+    stage: 'performance-fallback',
+    items: perfItems.length,
+    score: perfItems.length ? scoreYouTubeIngestItem(perfItems[0]!) : -1,
+  });
+
+  const bgMediaCandidates = await requestYouTubeMediaFromBackground();
+  const bgMediaItems = buildYouTubeVideoItemsFromMediaCandidates(bgMediaCandidates, targetEl, effectiveResponse);
+  if (bgMediaItems.length) candidateGroups.push({ label: 'background-webrequest-fallback', items: bgMediaItems });
+  trace.push({
+    stage: 'background-webrequest-fallback',
+    candidates: bgMediaCandidates.length,
+    items: bgMediaItems.length,
+    score: bgMediaItems.length ? scoreYouTubeIngestItem(bgMediaItems[0]!) : -1,
+  });
+
+  const fallbackUrl = findYouTubeVideoElementUrl(targetEl);
+  trace.push({
+    stage: 'video-element-fallback',
+    hasUrl: Boolean(fallbackUrl),
+  });
+  if (!fallbackUrl) {
+    const bestWithoutFallback = chooseBestYouTubeItemSet(candidateGroups);
+    if (!bestWithoutFallback) {
+      logDebug('youtube extract failed', trace);
+      return [];
+    }
+    trace.push({
+      stage: 'choose-best',
+      winner: bestWithoutFallback.label,
+      score: bestWithoutFallback.items.length ? scoreYouTubeIngestItem(bestWithoutFallback.items[0]!) : -1,
+    });
+    logDebug('youtube extract success', trace);
+    return bestWithoutFallback.items;
+  }
+  const videoId = extractYouTubeVideoIdFromUrl(location.href);
+  const sourceUrl = normalizeYouTubeWatchUrl(videoId);
+  const displayName = sanitizeDisplayName(`${videoId || document.title || 'youtube-video'}.mp4`);
+
+  const result = [
+    {
+      sourcePageUrl: sourceUrl,
+      tweetUrl: sourceUrl,
+      mediaUrl: fallbackUrl,
+      mediaType: 'video',
+      collectedAt: new Date().toISOString(),
+      context: {
+        site: 'youtube',
+        referer: location.href,
+        pageTitle: document.title || undefined,
+        displayName,
+      },
+    },
+  ];
+  candidateGroups.push({ label: 'video-element-fallback', items: result });
+
+  const best = chooseBestYouTubeItemSet(candidateGroups);
+  if (!best) {
+    logDebug('youtube extract failed', trace);
+    return [];
+  }
+
+  trace.push({
+    stage: 'choose-best',
+    winner: best.label,
+    score: best.items.length ? scoreYouTubeIngestItem(best.items[0]!) : -1,
+  });
+  logDebug('youtube extract success', trace);
+  return best.items;
+}
+
 function isXiaohongshuUiNoise(el: HTMLElement): boolean {
   // XHS comments contain lots of small emoji/stickers rendered as <img>.
   // We only show save UI for "real" media (usually large), so we filter by size.
@@ -576,6 +1554,98 @@ function isXiaohongshuUiNoise(el: HTMLElement): boolean {
   if (commentLike && area > 0 && area < 60000) return true;
 
   return false;
+}
+
+function hasXiaohongshuVideoMeta(doc: Document = document): boolean {
+  return Boolean(
+    doc.querySelector(
+      'meta[property="og:video:url"], meta[property="og:video:secure_url"], meta[property="og:video"], meta[name="twitter:player:stream"], meta[property="twitter:player:stream"]',
+    ),
+  );
+}
+
+function isXiaohongshuVideoContext(targetEl: Element): boolean {
+  if (targetEl instanceof HTMLVideoElement) return true;
+  if (targetEl.closest('video')) return true;
+  if (targetEl.querySelector('video')) return true;
+
+  let cur: Element | null = targetEl;
+  for (let depth = 0; cur && depth < 4; depth += 1) {
+    if (cur.querySelector('video')) return true;
+    if (cur instanceof HTMLElement) {
+      const attrs = Array.from(cur.attributes)
+        .map((attr) => attr.value ?? '')
+        .join(' ');
+      if (/(xhscdn|xiaohongshu|rednote).*(?:\.mp4|\.m3u8)|(?:\.mp4|\.m3u8).*(xhscdn|xiaohongshu|rednote)/i.test(attrs)) {
+        return true;
+      }
+    }
+    cur = cur.parentElement;
+  }
+
+  return hasXiaohongshuVideoMeta(document);
+}
+
+function extractXiaohongshuVideoItems(targetEl: Element): IngestItem[] {
+  const roots: Array<Document | Element> = [];
+  let cur: Element | null = targetEl;
+  for (let depth = 0; cur && depth < 4; depth += 1) {
+    roots.push(cur);
+    cur = cur.parentElement;
+  }
+  roots.push(document);
+
+  for (const root of roots) {
+    const items =
+      root instanceof Document ? extractFromDocument(root, location.href).items : extractFromRoot(root, location.href).items;
+    const videoItems = items.filter((item) => item.mediaType === 'video');
+    if (videoItems.length) return dedupeItems(videoItems);
+  }
+
+  return [];
+}
+
+function scoreXiaohongshuVideoUrl(url: string): number {
+  const raw = String(url ?? '').trim().toLowerCase();
+  if (!raw || !/^https?:/i.test(raw)) return -100000;
+  if (/\.(?:pdf|doc|docx|ppt|pptx|xls|xlsx|txt|zip|rar|7z)(?:$|[?#])/i.test(raw)) return -90000;
+  let score = 0;
+  if (/\.mp4(?:$|[?#])/i.test(raw)) score += 4500;
+  if (/\.m3u8(?:$|[?#])/i.test(raw)) score += 4200;
+  if (/(?:^|[-.])video(?:[-.]|$)|fe-video|sns-video/.test(raw)) score += 1800;
+  if (/\/stream\/|\/playurl\/|\/playlist\/|\/master(?:\.m3u8)?(?:$|[/?#])/.test(raw)) score += 1600;
+  if (/(?:^|[/_-])(fhd|uhd|hd|origin|playback|videoplay)(?:[/_-]|$)/.test(raw)) score += 900;
+  if (/image|img|photo|cover|poster/.test(raw)) score -= 1200;
+  return score;
+}
+
+function selectPreferredXiaohongshuVideoItems(items: IngestItem[]): IngestItem[] {
+  const videoItems = items
+    .filter((item) => item.mediaType === 'video')
+    .filter((item) => {
+      const url = String(item.mediaUrl ?? '').trim();
+      return /^https?:/i.test(url) && !/\.(?:pdf|doc|docx|ppt|pptx|xls|xlsx|txt|zip|rar|7z)(?:$|[?#])/i.test(url);
+    });
+  if (!videoItems.length) return [];
+  const ranked = [...videoItems].sort(
+    (a, b) => scoreXiaohongshuVideoUrl(String(b.mediaUrl ?? '')) - scoreXiaohongshuVideoUrl(String(a.mediaUrl ?? '')),
+  );
+  const best = ranked[0];
+  if (!best) return [];
+  const alternateMediaUrls = ranked
+    .slice(1)
+    .map((item) => String(item.mediaUrl ?? '').trim())
+    .filter((url) => url && url !== best.mediaUrl)
+    .slice(0, 6);
+  return [
+    {
+      ...best,
+      context: {
+        ...(best.context ?? {}),
+        alternateMediaUrls,
+      },
+    },
+  ];
 }
 
 function hasDirectXVideoMedia(root: Element): boolean {
@@ -1492,11 +2562,31 @@ function applyProgressEvent(payload: any) {
     updatedAt: Date.now(),
   };
 
+  const prevBytes = Number.isFinite(item.bytes) ? Number(item.bytes) : undefined;
+  const prevTotal = Number.isFinite(item.total) ? Number(item.total) : undefined;
   item.displayName = displayName || item.displayName;
   item.status = status;
   item.stage = stage;
-  item.bytes = bytes ?? item.bytes;
-  item.total = total ?? item.total;
+  const isTransferStage = stage === 'queued' || stage === 'downloading' || stage === 'downloaded';
+  if (isTransferStage) {
+    if (Number.isFinite(bytes)) {
+      item.bytes = prevBytes !== undefined ? Math.max(prevBytes, Number(bytes)) : Number(bytes);
+    } else {
+      item.bytes = prevBytes;
+    }
+
+    if (Number.isFinite(total)) {
+      item.total = prevTotal !== undefined ? Math.max(prevTotal, Number(total)) : Number(total);
+    } else {
+      item.total = prevTotal;
+    }
+  } else {
+    item.bytes = bytes ?? item.bytes;
+    item.total = total ?? item.total;
+  }
+  if (Number.isFinite(item.bytes) && Number.isFinite(item.total) && Number(item.bytes) > Number(item.total)) {
+    item.total = Number(item.bytes);
+  }
   if ((stage === 'created' || stage === 'exists') && Number.isFinite(item.total) && Number.isFinite(item.bytes)) {
     item.bytes = Math.max(Number(item.bytes), Number(item.total));
   } else if ((stage === 'created' || stage === 'exists') && !Number.isFinite(item.total) && Number.isFinite(item.bytes)) {
@@ -1645,13 +2735,18 @@ async function handleSaveClick(btn: HTMLButtonElement, targetEl: Element, mode: 
       }
     }
 
-    let items =
-      pixivBuiltItems ??
-      (mode === 'group'
-        ? extractFromRoot(targetEl, location.href).items
-        : mode === 'group-active'
-          ? extractSingleFromGroup(targetEl).items
-          : extractFromElement(targetEl, location.href).items);
+    let items: IngestItem[] = [];
+    if (siteId === 'youtube') {
+      items = await extractYouTubeVideoItems(targetEl);
+    } else {
+      items =
+        pixivBuiltItems ??
+        (mode === 'group'
+          ? extractFromRoot(targetEl, location.href).items
+          : mode === 'group-active'
+            ? extractSingleFromGroup(targetEl).items
+            : extractFromElement(targetEl, location.href).items);
+    }
 
     let preferVideo = false;
     const onXDetailPage = (() => {
@@ -1704,9 +2799,22 @@ async function handleSaveClick(btn: HTMLButtonElement, targetEl: Element, mode: 
       return;
     }
 
+    if (siteId === 'xiaohongshu') {
+      const preferXiaohongshuVideo = isXiaohongshuVideoContext(targetEl);
+      if (preferXiaohongshuVideo) {
+        const directVideoItems = items.filter((item) => item.mediaType === 'video');
+        items = directVideoItems.length ? directVideoItems : extractXiaohongshuVideoItems(targetEl);
+        items = selectPreferredXiaohongshuVideoItems(items);
+      }
+    }
+
     items = items.filter((item) => isHttpUrl(String(item.mediaUrl ?? '')));
     if (!items.length) {
-      showToast('未检测到媒体', 1400);
+      if (siteId === 'youtube') {
+        showToast('未检测到媒体，请先播放 1-2 秒后再保存', 1800);
+      } else {
+        showToast('未检测到媒体', 1400);
+      }
       btn.textContent = '没有媒体';
       await sleep(600);
       btn.textContent = originalText;
@@ -2654,7 +3762,35 @@ function scanAndInject() {
   const siteId = detectSite(location.href);
   if (siteId === 'other') return;
   if (siteId === 'xiaohongshu' && !isXiaohongshuDetailUrl(location.href)) return;
+  if (siteId === 'youtube' && !isYouTubeDetailUrl(location.href)) return;
   const isX = siteId === 'x';
+  const isYouTube = siteId === 'youtube';
+
+  if (isYouTube) {
+    const host = findYouTubePlayerHost();
+    if (!host) return;
+    if (host.getAttribute(BOUND_ATTR) === '1' && host.querySelector(`.${BTN_WRAPPER_CLASS}[data-site="youtube"]`)) return;
+
+    host.setAttribute(BOUND_ATTR, '1');
+    host.classList.add(HOST_CLASS);
+    ensureRelative(host);
+    ensureClickableChain(host);
+
+    if (host.querySelector(`.${BTN_WRAPPER_CLASS}[data-role="single"][data-site="youtube"]`)) return;
+
+    const targetEl = (host.querySelector('video.html5-main-video, video') as Element | null) ?? host;
+    const btn = createButton('保存视频', '保存当前 YouTube 视频（默认优先最高画质）');
+    btn.dataset.site = 'youtube';
+    bindButton(btn, targetEl, 'single');
+
+    const wrap = createWrap('single');
+    wrap.dataset.role = 'single';
+    wrap.dataset.site = 'youtube';
+    placeWrap(host, wrap);
+    wrap.appendChild(btn);
+    host.appendChild(wrap);
+    return;
+  }
 
   const roots = siteId === 'x' ? Array.from(document.querySelectorAll<HTMLElement>('article')) : [document.body];
   for (const root of roots) {

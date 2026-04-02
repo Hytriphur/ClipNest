@@ -1,27 +1,28 @@
 param(
   [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
-  [string]$Proxy = "http://127.0.0.1:7890",
-  [string]$LogLevel = "info",
-  [int]$Port = 5174
+  [string]$ListenHost = "127.0.0.1",
+  [int]$Port = 5180,
+  [string]$Token = "",
+  [string]$ServerUrl = "http://127.0.0.1:5174",
+  [string]$WebUrl = "http://127.0.0.1:5173"
 )
 
 $ErrorActionPreference = "Stop"
-# Avoid treating native command stderr output as terminating errors in task mode.
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
   $PSNativeCommandUseErrorActionPreference = $false
 }
 
 $Node = (Get-Command node -ErrorAction Stop).Source
-$ServerEntry = Join-Path $RepoRoot "apps\\server\\dist\\index.js"
-if (!(Test-Path $ServerEntry)) {
-  throw "Server build not found: $ServerEntry. Run: npm run build -w apps/server"
+$LauncherEntry = Join-Path $RepoRoot "apps\\launcher\\src\\index.mjs"
+if (!(Test-Path $LauncherEntry)) {
+  throw "Launcher entry not found: $LauncherEntry"
 }
 
 $LogsDir = Join-Path $RepoRoot "logs"
 if (!(Test-Path $LogsDir)) {
   New-Item -ItemType Directory -Path $LogsDir | Out-Null
 }
-$LogFile = Join-Path $LogsDir "server.log"
+$LogFile = Join-Path $LogsDir "launcher.log"
 
 function Ensure-Utf8LogFile([string]$path) {
   if (!(Test-Path $path)) {
@@ -56,20 +57,23 @@ function Write-LogLine([string]$line) {
   try {
     [System.IO.File]::AppendAllText($LogFile, $line + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
   } catch {
-    # Do not fail startup if log file is temporarily locked.
+    # ignore temporary lock
   }
 }
 
 Ensure-Utf8LogFile -path $LogFile
 
-$env:XIC_LOG_LEVEL = $LogLevel
-$env:PORT = [string]$Port
-if ($Proxy -and $Proxy -ne "off") {
-  $env:XIC_PROXY = $Proxy
+$env:LAUNCHER_HOST = $ListenHost
+$env:LAUNCHER_PORT = [string]$Port
+$env:CLIPNEST_REPO_ROOT = $RepoRoot
+$env:CLIPNEST_SERVER_URL = $ServerUrl
+$env:CLIPNEST_WEB_URL = $WebUrl
+if ($Token) {
+  $env:LAUNCHER_TOKEN = $Token
 } else {
-  Remove-Item Env:XIC_PROXY -ErrorAction SilentlyContinue
+  Remove-Item Env:LAUNCHER_TOKEN -ErrorAction SilentlyContinue
 }
 
-Write-LogLine ("[{0}] clipnest server starting" -f (Get-Date -Format "s"))
-$cmd = ('"{0}" "{1}" >> "{2}" 2>&1' -f $Node, $ServerEntry, $LogFile)
+Write-LogLine ("[{0}] clipnest launcher starting" -f (Get-Date -Format "s"))
+$cmd = ('"{0}" "{1}" >> "{2}" 2>&1' -f $Node, $LauncherEntry, $LogFile)
 & cmd.exe /d /c $cmd

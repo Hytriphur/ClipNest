@@ -31,6 +31,35 @@ if (!(Test-Path $LogsDir)) {
 }
 $LogFile = Join-Path $LogsDir "web.log"
 
+function Ensure-Utf8LogFile([string]$path) {
+  if (!(Test-Path $path)) {
+    try {
+      [System.IO.File]::WriteAllText($path, "", [System.Text.Encoding]::UTF8)
+    } catch {
+      # ignore
+    }
+    return
+  }
+  try {
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    $hasNull = $false
+    foreach ($b in $bytes) {
+      if ($b -eq 0) {
+        $hasNull = $true
+        break
+      }
+    }
+    if ($hasNull) {
+      $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+      $backup = "$path.legacy-$stamp"
+      Move-Item -LiteralPath $path -Destination $backup -Force
+      [System.IO.File]::WriteAllText($path, "", [System.Text.Encoding]::UTF8)
+    }
+  } catch {
+    # ignore
+  }
+}
+
 function Write-LogLine([string]$line) {
   try {
     [System.IO.File]::AppendAllText($LogFile, $line + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
@@ -38,6 +67,8 @@ function Write-LogLine([string]$line) {
     # Do not fail startup if log file is temporarily locked.
   }
 }
+
+Ensure-Utf8LogFile -path $LogFile
 
 Write-LogLine ("[{0}] clipnest web starting" -f (Get-Date -Format "s"))
 
@@ -57,4 +88,6 @@ try {
 }
 
 # Vite preview expects the project root as a positional argument, not --root.
-& $Node $ViteEntry preview (Join-Path $RepoRoot "apps\\web") --host 127.0.0.1 --port $WebPort --strictPort >> $LogFile 2>&1
+$webRoot = Join-Path $RepoRoot "apps\\web"
+$cmd = ('"{0}" "{1}" preview "{2}" --host 127.0.0.1 --port {3} --strictPort >> "{4}" 2>&1' -f $Node, $ViteEntry, $webRoot, $WebPort, $LogFile)
+& cmd.exe /d /c $cmd

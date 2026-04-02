@@ -12,6 +12,37 @@ type RecentVideo = {
   ts: number;
 };
 
+type RecentYouTubeMedia = {
+  url: string;
+  ts: number;
+  kind: 'video' | 'audio' | 'other';
+  contentLength?: number;
+  qualityLabel?: string;
+};
+
+type YouTubePlayerSnapshot = {
+  pageUrl: string;
+  origin: string;
+  videoId?: string;
+  apiKey?: string;
+  visitorData?: string;
+  sts?: number;
+  loggedIn?: boolean;
+  clientVersion?: string;
+  hl?: string;
+  gl?: string;
+  innertubeContext?: any;
+  localResponse?: any | null;
+};
+
+type YouTubeInnertubeProfile = {
+  key: 'IOS' | 'ANDROID' | 'MWEB' | 'WEB';
+  clientName: string;
+  clientVersionFallback: string;
+  headerClientName: string;
+  extraClient?: Record<string, unknown>;
+};
+
 type PixivMeta = {
   artworkId: string;
   artworkUrl: string;
@@ -30,6 +61,7 @@ const state: AutoState = {
 
 const pixivMetaCache = new Map<string, PixivMeta>();
 const recentVideoByTab = new Map<number, RecentVideo[]>();
+const recentYouTubeMediaByTab = new Map<number, RecentYouTubeMedia[]>();
 const keepAlivePorts = new Set<chrome.runtime.Port>();
 const portByClientId = new Map<string, chrome.runtime.Port>();
 const clientIdsByPort = new Map<chrome.runtime.Port, Set<string>>();
@@ -75,6 +107,236 @@ function isXVideoCandidateUrl(url: string): boolean {
   return true;
 }
 
+const YOUTUBE_AUDIO_ITAGS = new Set([
+  139, 140, 141, 171, 172, 249, 250, 251, 256, 258, 325, 328, 599, 600,
+]);
+
+const YOUTUBE_PLAYER_PROFILES: YouTubeInnertubeProfile[] = [
+  {
+    key: 'IOS',
+    clientName: 'IOS',
+    clientVersionFallback: '20.10.4',
+    headerClientName: '5',
+    extraClient: {
+      deviceModel: 'iPhone16,2',
+      osName: 'iOS',
+      osVersion: '17.4.1.21E230',
+      platform: 'MOBILE',
+      clientFormFactor: 'SMALL_FORM_FACTOR',
+      clientScreen: 'WATCH',
+    },
+  },
+  {
+    key: 'ANDROID',
+    clientName: 'ANDROID',
+    clientVersionFallback: '20.10.38',
+    headerClientName: '3',
+    extraClient: {
+      osName: 'Android',
+      osVersion: '14',
+      androidSdkVersion: 34,
+      platform: 'MOBILE',
+      clientFormFactor: 'SMALL_FORM_FACTOR',
+      clientScreen: 'WATCH',
+    },
+  },
+  {
+    key: 'MWEB',
+    clientName: 'MWEB',
+    clientVersionFallback: '2.20260331.00.00',
+    headerClientName: '2',
+    extraClient: {
+      platform: 'MOBILE',
+      clientFormFactor: 'SMALL_FORM_FACTOR',
+      clientScreen: 'WATCH',
+    },
+  },
+  {
+    key: 'WEB',
+    clientName: 'WEB',
+    clientVersionFallback: '2.20260331.00.00',
+    headerClientName: '1',
+    extraClient: {
+      platform: 'DESKTOP',
+      clientScreen: 'WATCH',
+    },
+  },
+];
+
+function normalizeYouTubePlayerResponse(candidate: any): any | null {
+  if (!candidate) return null;
+  const tryParse = (value: any): any | null => {
+    if (!value) return null;
+    if (typeof value === 'object') return value;
+    if (typeof value !== 'string') return null;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  };
+
+  const direct = tryParse(candidate);
+  if (direct?.streamingData) return direct;
+  if (direct?.playerResponse) {
+    const nested = tryParse(direct.playerResponse);
+    if (nested?.streamingData) return nested;
+  }
+  return null;
+}
+
+function isBlockedYouTubePlaybackUrl(rawUrl: string): boolean {
+  const raw = String(rawUrl ?? '').trim();
+  if (!raw) return false;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    if (host === 'redirector.googlevideo.com' || host.endsWith('.redirector.googlevideo.com')) {
+      return true;
+    }
+    const isGoogleVideo = host === 'googlevideo.com' || host.endsWith('.googlevideo.com');
+    if (!isGoogleVideo || !path.includes('videoplayback')) return false;
+    const client = (u.searchParams.get('c') ?? '').trim().toUpperCase();
+    const sabr = (u.searchParams.get('sabr') ?? '').trim();
+    return client === 'WEB' && sabr === '1';
+  } catch {
+    return false;
+  }
+}
+
+function isYouTubeManifestLikeUrl(rawUrl: string): boolean {
+  const raw = String(rawUrl ?? '').trim();
+  if (!raw || !/^https?:\/\//i.test(raw)) return false;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    const query = u.search.toLowerCase();
+    const isYouTubeHost =
+      host === 'youtube.com' ||
+      host.endsWith('.youtube.com') ||
+      host === 'googlevideo.com' ||
+      host.endsWith('.googlevideo.com');
+    if (!isYouTubeHost) return false;
+    if (/\.(?:m3u8|mpd)(?:$|[?#])/i.test(raw)) return true;
+    if (/\/manifest\/|\/api\/manifest\//i.test(path)) return true;
+    if (/[?&](?:manifest|playlist|hls|dash)=/i.test(query)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function isYouTubeMediaCandidateUrl(url: string): boolean {
+  const raw = String(url ?? '').trim();
+  if (!raw || !/^https?:\/\//i.test(raw)) return false;
+  if (isBlockedYouTubePlaybackUrl(raw)) return false;
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    const query = u.search.toLowerCase();
+    const isGoogleVideo = host === 'googlevideo.com' || host.endsWith('.googlevideo.com');
+    const isYouTubeHost = host === 'youtube.com' || host.endsWith('.youtube.com');
+    if (isGoogleVideo) {
+      return /videoplayback|manifest|\.m3u8|\.mpd/i.test(`${path}${query}`);
+    }
+    if (isYouTubeHost) {
+      return /\/manifest\/|\/api\/manifest\/|\.m3u8|\.mpd/i.test(`${path}${query}`);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function resolveYouTubeStreamUrl(raw: any): string | null {
+  const directUrl = typeof raw?.url === 'string' ? raw.url.trim() : '';
+  if (directUrl) return isYouTubeMediaCandidateUrl(directUrl) ? directUrl : null;
+
+  const cipher = typeof raw?.signatureCipher === 'string' ? raw.signatureCipher : typeof raw?.cipher === 'string' ? raw.cipher : '';
+  if (!cipher) return null;
+  try {
+    const params = new URLSearchParams(cipher);
+    const base = params.get('url');
+    if (!base) return null;
+    const sig = params.get('sig') || params.get('signature');
+    const encrypted = params.get('s');
+    if (!sig && encrypted) return null;
+    const sp = params.get('sp') || 'signature';
+    const u = new URL(base);
+    if (sig) u.searchParams.set(sp, sig);
+    const resolved = u.toString();
+    return isYouTubeMediaCandidateUrl(resolved) ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
+function scoreYouTubePlayerResponse(response: any): number {
+  const normalized = normalizeYouTubePlayerResponse(response);
+  if (!normalized?.streamingData) return -100000;
+
+  let score = 0;
+  const dashManifestUrl = typeof normalized?.streamingData?.dashManifestUrl === 'string' ? normalized.streamingData.dashManifestUrl.trim() : '';
+  const hlsManifestUrl = typeof normalized?.streamingData?.hlsManifestUrl === 'string' ? normalized.streamingData.hlsManifestUrl.trim() : '';
+  if (isYouTubeManifestLikeUrl(dashManifestUrl)) score += 14000;
+  if (isYouTubeManifestLikeUrl(hlsManifestUrl)) score += 13200;
+
+  const formats = Array.isArray(normalized?.streamingData?.formats) ? normalized.streamingData.formats : [];
+  const adaptiveFormats = Array.isArray(normalized?.streamingData?.adaptiveFormats) ? normalized.streamingData.adaptiveFormats : [];
+  const usableUrls = [...formats, ...adaptiveFormats]
+    .map((raw) => resolveYouTubeStreamUrl(raw))
+    .filter(Boolean) as string[];
+
+  if (usableUrls.length) {
+    score += 6800;
+    score += usableUrls.length * 120;
+    if (usableUrls.some((url) => /mime=video/i.test(url) || /videoplayback/i.test(url))) score += 1200;
+    if (usableUrls.some((url) => /mime=audio/i.test(url))) score += 900;
+  }
+
+  return usableUrls.length || isYouTubeManifestLikeUrl(dashManifestUrl) || isYouTubeManifestLikeUrl(hlsManifestUrl)
+    ? score
+    : -100000;
+}
+
+function parseYouTubeMediaFromUrl(rawUrl: string): RecentYouTubeMedia | null {
+  if (!isYouTubeMediaCandidateUrl(rawUrl)) return null;
+  try {
+    const u = new URL(rawUrl);
+    const mimeRaw = decodeURIComponent(u.searchParams.get('mime') ?? u.searchParams.get('type') ?? '').toLowerCase();
+    let kind: 'video' | 'audio' | 'other' = 'other';
+    if (mimeRaw.startsWith('audio/')) {
+      kind = 'audio';
+    } else if (mimeRaw.startsWith('video/')) {
+      kind = 'video';
+    } else {
+      const itag = Number(u.searchParams.get('itag') ?? NaN);
+      if (Number.isFinite(itag) && YOUTUBE_AUDIO_ITAGS.has(itag)) {
+        kind = 'audio';
+      } else if (
+        u.pathname.toLowerCase().includes('videoplayback') ||
+        /(\.m3u8|\.mpd|\/manifest\/|\/api\/manifest\/)/i.test(u.pathname)
+      ) {
+        kind = 'video';
+      }
+    }
+    const qualityLabel = (u.searchParams.get('quality_label') ?? u.searchParams.get('quality') ?? '').trim() || undefined;
+    const clen = Number(u.searchParams.get('clen') ?? NaN);
+    return {
+      url: rawUrl,
+      ts: Date.now(),
+      kind,
+      qualityLabel,
+      contentLength: Number.isFinite(clen) && clen > 0 ? clen : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function rememberRecentVideo(tabId: number, url: string) {
   const now = Date.now();
   const list = recentVideoByTab.get(tabId) ?? [];
@@ -91,6 +353,30 @@ function getRecentVideoUrls(tabId: number): string[] {
   return fresh.map((item) => item.url);
 }
 
+function rememberRecentYouTubeMedia(tabId: number, media: RecentYouTubeMedia) {
+  const now = Date.now();
+  const list = recentYouTubeMediaByTab.get(tabId) ?? [];
+  const key = `${media.kind}|${media.url}`;
+  const existing = list.find((item) => `${item.kind}|${item.url}` === key);
+  if (!existing) {
+    list.push(media);
+  } else {
+    existing.ts = now;
+    if ((media.contentLength ?? 0) > (existing.contentLength ?? 0)) existing.contentLength = media.contentLength;
+    if (media.qualityLabel && !existing.qualityLabel) existing.qualityLabel = media.qualityLabel;
+  }
+  const fresh = list.filter((item) => now - item.ts < 180_000).slice(-120);
+  recentYouTubeMediaByTab.set(tabId, fresh);
+}
+
+function getRecentYouTubeMedia(tabId: number): RecentYouTubeMedia[] {
+  const now = Date.now();
+  const list = recentYouTubeMediaByTab.get(tabId) ?? [];
+  const fresh = list.filter((item) => now - item.ts < 180_000);
+  recentYouTubeMediaByTab.set(tabId, fresh);
+  return fresh;
+}
+
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     const tabId = details.tabId ?? -1;
@@ -100,6 +386,18 @@ chrome.webRequest.onBeforeRequest.addListener(
     rememberRecentVideo(tabId, url);
   },
   { urls: ['https://video.twimg.com/*'] },
+);
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    const tabId = details.tabId ?? -1;
+    if (tabId < 0) return;
+    const url = details.url ?? '';
+    const media = parseYouTubeMediaFromUrl(url);
+    if (!media) return;
+    rememberRecentYouTubeMedia(tabId, media);
+  },
+  { urls: ['https://*.googlevideo.com/*', 'https://*.youtube.com/*', 'https://youtube.com/*'] },
 );
 
 function isPixivItem(item: IngestItem): boolean {
@@ -282,6 +580,100 @@ async function pingServer(serverUrl: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+type LauncherCallOptions = {
+  method?: 'GET' | 'POST';
+  body?: unknown;
+  timeoutMs?: number;
+};
+
+function normalizeLauncherBase(input?: string | null): string {
+  const raw = String(input ?? '').trim();
+  if (!raw) return 'http://127.0.0.1:5180';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `http://${raw}`;
+}
+
+function buildLauncherCandidateBases(base: string): string[] {
+  const out: string[] = [];
+  const push = (value: string) => {
+    const v = value.trim().replace(/\/+$/, '');
+    if (!v) return;
+    if (!out.includes(v)) out.push(v);
+  };
+  push(base);
+
+  try {
+    const u = new URL(base);
+    if (u.hostname === 'localhost') {
+      u.hostname = '127.0.0.1';
+      push(u.toString());
+    } else if (u.hostname === '127.0.0.1') {
+      u.hostname = 'localhost';
+      push(u.toString());
+    }
+  } catch {
+    // ignore invalid URL and keep only base fallback
+  }
+
+  push('http://127.0.0.1:5180');
+  push('http://localhost:5180');
+  return out;
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callLauncher(settings: Awaited<ReturnType<typeof loadSettings>>, path: string, opts?: LauncherCallOptions) {
+  const base = normalizeLauncherBase(settings.launcherUrl);
+  const bases = buildLauncherCandidateBases(base);
+  const endpoint = path.startsWith('/') ? path : `/${path}`;
+  const headers: Record<string, string> = {};
+  const token = settings.launcherToken?.trim();
+  if (token) headers['x-clipnest-token'] = token;
+  if (opts?.body !== undefined) headers['content-type'] = 'application/json';
+
+  const init: RequestInit = {
+    method: opts?.method ?? 'GET',
+    headers,
+    body: opts?.body !== undefined ? JSON.stringify(opts.body) : undefined,
+  };
+
+  let lastNetworkError: unknown = null;
+  for (const candidate of bases) {
+    const url = `${candidate}${endpoint}`;
+    try {
+      const res = await fetchWithTimeout(url, init, opts?.timeoutMs ?? 4000);
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
+      if (!res.ok) {
+        const message = data?.error ? String(data.error) : `launcher HTTP ${res.status}`;
+        throw new Error(message);
+      }
+      if (data && typeof data === 'object') {
+        data.__launcherUrl = candidate;
+      }
+      return data;
+    } catch (err) {
+      lastNetworkError = err;
+    }
+  }
+
+  throw (lastNetworkError instanceof Error
+    ? lastNetworkError
+    : new Error(lastNetworkError ? String(lastNetworkError) : 'launcher unavailable'));
 }
 
 async function ingest(serverUrl: string, items: IngestItem[]) {
@@ -678,6 +1070,352 @@ async function extractXVideoFromTab(tabId: number, tweetUrl: string, hintIds?: s
   return (r.items ?? []) as IngestItem[];
 }
 
+function cloneYouTubeInnertubeContext(value: any): any | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+}
+
+async function extractYouTubePlayerSnapshotFromTab(tabId: number): Promise<YouTubePlayerSnapshot | null> {
+  const injected = (await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: () => {
+      const parseMaybe = (value: any) => {
+        if (!value) return null;
+        if (typeof value === 'object') return value;
+        if (typeof value !== 'string') return null;
+        try {
+          return JSON.parse(value);
+        } catch {
+          return null;
+        }
+      };
+      const unwrap = (value: any) => {
+        const parsed = parseMaybe(value);
+        if (parsed?.streamingData) return parsed;
+        if (parsed?.playerResponse) {
+          const nested = parseMaybe(parsed.playerResponse);
+          if (nested?.streamingData) return nested;
+        }
+        return null;
+      };
+      const extractVideoIdFromUrl = (rawUrl: string) => {
+        try {
+          const u = new URL(rawUrl);
+          const watchId = u.searchParams.get('v');
+          if (watchId) return watchId.trim();
+          const shorts = u.pathname.match(/^\/shorts\/([^/?#]+)/i);
+          if (shorts?.[1]) return shorts[1].trim();
+        } catch {
+          // ignore
+        }
+        return '';
+      };
+      const readConfig = (key: string) => {
+        const w = window as any;
+        try {
+          if (w.ytcfg && typeof w.ytcfg.get === 'function') {
+            const value = w.ytcfg.get(key);
+            if (value !== undefined) return value;
+          }
+        } catch {
+          // ignore
+        }
+        try {
+          return w.ytcfg?.data_?.[key];
+        } catch {
+          return undefined;
+        }
+      };
+
+      const candidates = [];
+      const w = window as any;
+
+      try {
+        const moviePlayer = document.getElementById('movie_player') as any;
+        if (moviePlayer && typeof moviePlayer.getPlayerResponse === 'function') {
+          candidates.push(moviePlayer.getPlayerResponse());
+        }
+        if (moviePlayer && typeof moviePlayer.getVideoData === 'function') {
+          candidates.push(moviePlayer.getVideoData?.()?.playerResponse);
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        if (w.ytplayer && typeof w.ytplayer.getPlayerResponse === 'function') {
+          candidates.push(w.ytplayer.getPlayerResponse());
+        }
+      } catch {
+        // ignore
+      }
+
+      candidates.push(w.ytInitialPlayerResponse);
+      candidates.push(w.ytplayer?.config?.args?.player_response);
+      candidates.push(w.ytplayer?.config?.args?.raw_player_response);
+      candidates.push(readConfig('PLAYER_RESPONSE'));
+
+      let localResponse: any | null = null;
+      for (const candidate of candidates) {
+        const resolved = unwrap(candidate);
+        if (resolved?.streamingData) {
+          localResponse = resolved;
+          break;
+        }
+      }
+
+      const innertubeContext = parseMaybe(readConfig('INNERTUBE_CONTEXT')) ?? null;
+      const client = innertubeContext?.client ?? {};
+      const videoId =
+        String(localResponse?.videoDetails?.videoId ?? '').trim() ||
+        String(readConfig('VIDEO_ID') ?? '').trim() ||
+        extractVideoIdFromUrl(location.href);
+      const apiKey =
+        String(readConfig('INNERTUBE_API_KEY') ?? '').trim() ||
+        String(readConfig('API_KEY') ?? '').trim() ||
+        undefined;
+      const visitorData =
+        String(readConfig('VISITOR_DATA') ?? client?.visitorData ?? '').trim() || undefined;
+      const stsRaw = readConfig('STS') ?? readConfig('PLAYER_STS');
+      const stsNum = Number(stsRaw ?? NaN);
+      const clientVersion =
+        String(readConfig('INNERTUBE_CLIENT_VERSION') ?? client?.clientVersion ?? '').trim() || undefined;
+      const hl = String(readConfig('HL') ?? client?.hl ?? '').trim() || undefined;
+      const gl = String(readConfig('GL') ?? client?.gl ?? '').trim() || undefined;
+      const loggedIn = Boolean(readConfig('LOGGED_IN') ?? false);
+
+      return {
+        pageUrl: location.href,
+        origin: location.origin,
+        videoId: videoId || undefined,
+        apiKey,
+        visitorData,
+        sts: Number.isFinite(stsNum) && stsNum > 0 ? stsNum : undefined,
+        loggedIn,
+        clientVersion,
+        hl,
+        gl,
+        innertubeContext,
+        localResponse,
+      };
+    },
+  } as any)) as Array<{ result?: any }>;
+
+  const raw = injected?.[0]?.result;
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    pageUrl: String(raw.pageUrl ?? '').trim(),
+    origin: String(raw.origin ?? '').trim(),
+    videoId: String(raw.videoId ?? '').trim() || undefined,
+    apiKey: String(raw.apiKey ?? '').trim() || undefined,
+    visitorData: String(raw.visitorData ?? '').trim() || undefined,
+    sts: Number.isFinite(raw.sts) ? Number(raw.sts) : undefined,
+    loggedIn: Boolean(raw.loggedIn),
+    clientVersion: String(raw.clientVersion ?? '').trim() || undefined,
+    hl: String(raw.hl ?? '').trim() || undefined,
+    gl: String(raw.gl ?? '').trim() || undefined,
+    innertubeContext: cloneYouTubeInnertubeContext(raw.innertubeContext),
+    localResponse: normalizeYouTubePlayerResponse(raw.localResponse),
+  };
+}
+
+function buildYouTubePlayerRequestContext(snapshot: YouTubePlayerSnapshot, profile: YouTubeInnertubeProfile): any {
+  const context = cloneYouTubeInnertubeContext(snapshot.innertubeContext) ?? {};
+  const client = typeof context.client === 'object' && context.client ? { ...context.client } : {};
+  client.clientName = profile.clientName;
+  client.clientVersion =
+    profile.key === 'WEB' || profile.key === 'MWEB'
+      ? snapshot.clientVersion || profile.clientVersionFallback
+      : profile.clientVersionFallback;
+  if (snapshot.hl && !client.hl) client.hl = snapshot.hl;
+  if (snapshot.gl && !client.gl) client.gl = snapshot.gl;
+  if (snapshot.visitorData && !client.visitorData) client.visitorData = snapshot.visitorData;
+  if (!Number.isFinite(Number(client.utcOffsetMinutes))) {
+    client.utcOffsetMinutes = -new Date().getTimezoneOffset();
+  }
+  Object.assign(client, profile.extraClient ?? {});
+  context.client = client;
+  context.request = typeof context.request === 'object' && context.request ? { ...context.request, useSsl: true } : { useSsl: true };
+  context.user = typeof context.user === 'object' && context.user ? { ...context.user } : {};
+  return context;
+}
+
+async function fetchYouTubePlayerResponseForProfile(
+  tabId: number,
+  snapshot: YouTubePlayerSnapshot,
+  profile: YouTubeInnertubeProfile,
+): Promise<{ response: any | null; meta: Record<string, unknown> }> {
+  if (!snapshot.origin || !snapshot.apiKey || !snapshot.videoId) {
+    return {
+      response: null,
+      meta: {
+        source: `youtubei:${profile.key}`,
+        skipped: 'missing snapshot data',
+      },
+    };
+  }
+
+  const context = buildYouTubePlayerRequestContext(snapshot, profile);
+  const requestUrl = `${snapshot.origin.replace(/\/+$/g, '')}/youtubei/v1/player?prettyPrint=false&key=${encodeURIComponent(snapshot.apiKey)}`;
+  const headers: Record<string, string> = {
+    accept: 'application/json',
+    'content-type': 'application/json',
+    'x-origin': snapshot.origin,
+    'x-youtube-client-name': profile.headerClientName,
+    'x-youtube-client-version': String(context?.client?.clientVersion ?? profile.clientVersionFallback),
+    'x-youtube-bootstrap-logged-in': snapshot.loggedIn ? '1' : '0',
+  };
+  if (snapshot.visitorData) headers['x-goog-visitor-id'] = snapshot.visitorData;
+
+  const body: Record<string, unknown> = {
+    videoId: snapshot.videoId,
+    context,
+    contentCheckOk: true,
+    racyCheckOk: true,
+    playbackContext: {
+      contentPlaybackContext: {
+        html5Preference: 'HTML5_PREF_WANTS',
+        ...(Number.isFinite(snapshot.sts) ? { signatureTimestamp: Number(snapshot.sts) } : {}),
+      },
+    },
+  };
+
+  const injected = (await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    args: [requestUrl, headers, body],
+    func: async (url: string, requestHeaders: Record<string, string>, payload: Record<string, unknown>) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6_500);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          credentials: 'include',
+          headers: requestHeaders,
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+        const text = await res.text();
+        let parsed: any = null;
+        try {
+          parsed = text ? JSON.parse(text) : null;
+        } catch {
+          parsed = null;
+        }
+        return {
+          ok: res.ok,
+          status: res.status,
+          response: parsed,
+          preview: parsed ? undefined : text.slice(0, 240),
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          status: 0,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  } as any)) as Array<{ result?: any }>;
+
+  const raw = injected?.[0]?.result ?? null;
+  const response = normalizeYouTubePlayerResponse(raw?.response);
+  const score = scoreYouTubePlayerResponse(response);
+  return {
+    response,
+    meta: {
+      source: `youtubei:${profile.key}`,
+      ok: Boolean(raw?.ok),
+      status: Number.isFinite(raw?.status) ? Number(raw.status) : undefined,
+      error: typeof raw?.error === 'string' ? raw.error : undefined,
+      preview: typeof raw?.preview === 'string' ? raw.preview : undefined,
+      score,
+      hasStreamingData: Boolean(response?.streamingData),
+    },
+  };
+}
+
+async function getYouTubePlayerResponseFromTab(
+  tabId: number,
+): Promise<{ response: any | null; meta: Record<string, unknown> }> {
+  const snapshot = await extractYouTubePlayerSnapshotFromTab(tabId);
+  const localResponse = normalizeYouTubePlayerResponse(snapshot?.localResponse);
+  let bestResponse = localResponse;
+  let bestScore = scoreYouTubePlayerResponse(localResponse);
+  let bestSource = 'page-local';
+  const attempts: Array<Record<string, unknown>> = [
+    {
+      source: 'page-local',
+      score: bestScore,
+      hasStreamingData: Boolean(localResponse?.streamingData),
+    },
+  ];
+
+  if (snapshot?.videoId && snapshot.apiKey) {
+    for (const profile of YOUTUBE_PLAYER_PROFILES) {
+      const attempt = await fetchYouTubePlayerResponseForProfile(tabId, snapshot, profile);
+      attempts.push(attempt.meta);
+      const attemptScore = Number(attempt.meta.score ?? -100000);
+      if (attempt.response && attemptScore > bestScore) {
+        bestResponse = attempt.response;
+        bestScore = attemptScore;
+        bestSource = String(attempt.meta.source ?? profile.key);
+      }
+      if (attempt.response && attemptScore >= 18_000) {
+        break;
+      }
+    }
+  } else {
+    attempts.push({
+      source: 'youtubei:skip',
+      skipped: !snapshot ? 'snapshot-missing' : 'missing-video-id-or-api-key',
+    });
+  }
+
+  return {
+    response: bestResponse,
+    meta: {
+      ...buildYouTubePlayerMeta(bestResponse),
+      source: bestSource,
+      score: bestScore,
+      attempts,
+      snapshot: snapshot
+        ? {
+            pageUrl: snapshot.pageUrl,
+            origin: snapshot.origin,
+            videoId: snapshot.videoId,
+            hasApiKey: Boolean(snapshot.apiKey),
+            hasInnertubeContext: Boolean(snapshot.innertubeContext),
+            loggedIn: Boolean(snapshot.loggedIn),
+          }
+        : null,
+    },
+  };
+}
+
+function buildYouTubePlayerMeta(response: any) {
+  const streamingData = response?.streamingData;
+  const formats = Array.isArray(streamingData?.formats) ? streamingData.formats : [];
+  const adaptiveFormats = Array.isArray(streamingData?.adaptiveFormats) ? streamingData.adaptiveFormats : [];
+  const hasHls = typeof streamingData?.hlsManifestUrl === 'string' && streamingData.hlsManifestUrl.trim().length > 0;
+  const hasDash = typeof streamingData?.dashManifestUrl === 'string' && streamingData.dashManifestUrl.trim().length > 0;
+  return {
+    hasStreamingData: Boolean(streamingData),
+    formatCount: formats.length,
+    adaptiveCount: adaptiveFormats.length,
+    hasHls,
+    hasDash,
+    videoId: String(response?.videoDetails?.videoId ?? '').trim() || undefined,
+  };
+}
+
 function extractTweetIdFromUrl(value?: string | null): string | null {
   if (!value) return null;
   try {
@@ -885,6 +1623,15 @@ async function runAutoTargets() {
       sendResponse({ ok: true, urls: getRecentVideoUrls(tabId) });
       return;
     }
+    if (msg?.type === 'XIC_GET_RECENT_YOUTUBE_MEDIA_URLS') {
+      const tabId = sender?.tab?.id ?? (Number.isFinite(msg?.tabId) ? Number(msg.tabId) : -1);
+      if (!tabId || tabId < 0) {
+        sendResponse({ ok: false, items: [] });
+        return;
+      }
+      sendResponse({ ok: true, items: getRecentYouTubeMedia(tabId) });
+      return;
+    }
     if (msg?.type === 'XIC_EXTRACT_X_VIDEO_FROM_TWEET') {
       const tweetUrl = String(msg?.tweetUrl ?? '').trim();
       const hintIds = Array.isArray(msg?.hintIds) ? msg.hintIds.map((v: any) => String(v ?? '').trim()).filter(Boolean) : [];
@@ -900,9 +1647,68 @@ async function runAutoTargets() {
       }
       return;
     }
+    if (msg?.type === 'XIC_YOUTUBE_GET_PLAYER_RESPONSE') {
+      const tabId = sender?.tab?.id ?? (Number.isFinite(msg?.tabId) ? Number(msg.tabId) : -1);
+      if (!tabId || tabId < 0) {
+        sendResponse({ ok: false, error: 'missing tab id' });
+        return;
+      }
+      try {
+        const payload = await getYouTubePlayerResponseFromTab(tabId);
+        sendResponse({ ok: Boolean(payload.response), response: payload.response, meta: payload.meta });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
     if (msg?.type === 'XIC_PING') {
       const ok = await pingServer(settings.serverUrl);
       sendResponse({ ok, serverUrl: settings.serverUrl });
+      return;
+    }
+    if (msg?.type === 'XIC_LAUNCHER_STATUS') {
+      try {
+        const [health, serverStatus] = await Promise.all([
+          callLauncher(settings, '/api/health', { method: 'GET' }),
+          callLauncher(settings, '/api/server/status', { method: 'GET' }),
+        ]);
+        const launcherUrl =
+          typeof health?.__launcherUrl === 'string' && health.__launcherUrl
+            ? health.__launcherUrl
+            : normalizeLauncherBase(settings.launcherUrl);
+        sendResponse({
+          ok: true,
+          launcherOk: true,
+          launcher: health,
+          server: serverStatus,
+          launcherUrl,
+        });
+      } catch (err) {
+        sendResponse({
+          ok: false,
+          launcherOk: false,
+          launcherUrl: normalizeLauncherBase(settings.launcherUrl),
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+    if (msg?.type === 'XIC_LAUNCHER_START_SERVER') {
+      try {
+        const out = await callLauncher(settings, '/api/server/start', { method: 'POST', body: {} });
+        sendResponse({ ok: true, out });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+      return;
+    }
+    if (msg?.type === 'XIC_LAUNCHER_RESTART_SERVER') {
+      try {
+        const out = await callLauncher(settings, '/api/server/restart', { method: 'POST', body: {} });
+        sendResponse({ ok: true, out });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
       return;
     }
     if (msg?.type === 'XIC_ENRICH_ITEMS') {

@@ -10,6 +10,7 @@
   },
   "scripts": {
     "dev": "concurrently -k -n server,web -c cyan,magenta \"npm run dev -w apps/server\" \"npm run dev -w apps/web\"",
+    "dev:launcher": "npm run dev -w apps/launcher",
     "build": "npm run build -ws",
     "test": "npm run test -ws",
     "lint": "npm run lint -ws",

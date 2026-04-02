@@ -40,6 +40,14 @@ export function detectSite(locHref: string): SiteId {
     ) {
       return 'google';
     }
+    if (
+      host === 'youtube.com' ||
+      host.endsWith('.youtube.com') ||
+      host === 'youtu.be' ||
+      host.endsWith('.youtu.be')
+    ) {
+      return 'youtube';
+    }
   } catch {
     // ignore
   }
@@ -55,6 +63,33 @@ function hasMediaExtension(url: string): boolean {
   }
 }
 
+function hasVideoExtension(url: string): boolean {
+  try {
+    const pathname = new URL(url.startsWith('//') ? `https:${url}` : url).pathname.toLowerCase();
+    return /\.(?:mp4|m3u8|webm|mov|m4v)(?:$|[?#])/i.test(pathname);
+  } catch {
+    return /\.(?:mp4|m3u8|webm|mov|m4v)(?:$|[?#])/i.test(url);
+  }
+}
+
+function hasImageExtension(url: string): boolean {
+  try {
+    const pathname = new URL(url.startsWith('//') ? `https:${url}` : url).pathname.toLowerCase();
+    return /\.(?:jpg|jpeg|png|webp|gif|bmp|avif|svg)(?:$|[?#])/i.test(pathname);
+  } catch {
+    return /\.(?:jpg|jpeg|png|webp|gif|bmp|avif|svg)(?:$|[?#])/i.test(url);
+  }
+}
+
+function hasBlockedDocumentExtension(url: string): boolean {
+  try {
+    const pathname = new URL(url.startsWith('//') ? `https:${url}` : url).pathname.toLowerCase();
+    return /\.(?:pdf|doc|docx|ppt|pptx|xls|xlsx|txt|zip|rar|7z)(?:$|[?#])/i.test(pathname);
+  } catch {
+    return /\.(?:pdf|doc|docx|ppt|pptx|xls|xlsx|txt|zip|rar|7z)(?:$|[?#])/i.test(url);
+  }
+}
+
 function tryAbsoluteUrl(rawUrl?: string | null, base?: string): string | undefined {
   if (!rawUrl) return undefined;
   const trimmed = rawUrl.trim();
@@ -64,6 +99,33 @@ function tryAbsoluteUrl(rawUrl?: string | null, base?: string): string | undefin
   } catch {
     return undefined;
   }
+}
+
+function decodeEscapedUrlText(text: string): string {
+  return text
+    .replace(/\\u002f/gi, '/')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\x2f/gi, '/')
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/gi, '&');
+}
+
+function cleanExtractedUrl(raw: string): string {
+  return raw.replace(/["'`<>]+$/g, '').replace(/[),.;]+$/g, '');
+}
+
+function extractUrlsFromText(text: string, base?: string): string[] {
+  const urls = new Set<string>();
+  const normalized = decodeEscapedUrlText(text);
+  const re = /(?:https?:\/\/|\/\/)[^\s"'<>`\\]+/g;
+  let match: RegExpExecArray | null = re.exec(normalized);
+  while (match) {
+    const raw = cleanExtractedUrl(match[0] ?? '');
+    const resolved = tryAbsoluteUrl(raw.startsWith('//') ? `https:${raw}` : raw, base);
+    if (resolved) urls.add(resolved);
+    match = re.exec(normalized);
+  }
+  return Array.from(urls);
 }
 
 function getQueryParamUrl(rawHref: string, locHref: string, names: string[]): string | undefined {
@@ -335,10 +397,12 @@ function isLikelyMediaUrl(url: string, site: SiteId): boolean {
     try {
       const u = new URL(url);
       const host = u.hostname.toLowerCase();
-      if (host.endsWith('.xhscdn.com')) return true;
+      if (hasBlockedDocumentExtension(url)) return false;
       if ((host.endsWith('.xiaohongshu.com') || host.endsWith('.rednote.com')) && hasMediaExtension(url)) return true;
+      if (host.endsWith('.xhscdn.com')) return classifyXiaohongshuMediaUrl(url) !== null;
       return hasMediaExtension(url);
     } catch {
+      if (hasBlockedDocumentExtension(url)) return false;
       return hasMediaExtension(url);
     }
   }
@@ -468,9 +532,87 @@ function collectXiaohongshuMetaMedia(doc: Document): Array<{ mediaUrl: string; m
   };
   push('meta[property="og:image"]', 'image');
   push('meta[name="twitter:image"]', 'image');
+  push('meta[property="og:video:url"]', 'video');
+  push('meta[property="og:video:secure_url"]', 'video');
   push('meta[property="og:video"]', 'video');
   push('meta[name="twitter:player:stream"]', 'video');
+  push('meta[property="twitter:player:stream"]', 'video');
   return urls;
+}
+
+function classifyXiaohongshuMediaUrl(url: string): 'image' | 'video' | null {
+  const lower = url.toLowerCase();
+  if (hasBlockedDocumentExtension(lower)) return null;
+  if (hasVideoExtension(lower)) return 'video';
+  if (hasImageExtension(lower)) return 'image';
+  try {
+    const u = new URL(lower.startsWith('//') ? `https:${lower}` : lower);
+    const host = u.hostname.toLowerCase();
+    const path = u.pathname.toLowerCase();
+    const query = u.search.toLowerCase();
+    const hostLooksVideo = /(?:^|[-.])video(?:[-.]|$)|fe-video|sns-video/.test(host);
+    const hostLooksImage = /webpic|pic|image|photo|sns-img|sns-web/.test(host);
+    const pathLooksVideo =
+      /\/video\//.test(path) ||
+      /\/stream\//.test(path) ||
+      /\/playurl\//.test(path) ||
+      /\/playlist\//.test(path) ||
+      /\/master(?:\.m3u8)?$/i.test(path) ||
+      /(?:^|[/_-])(fhd|uhd|hd|origin|originvideo|videoplay|playback)(?:[/_-]|$)/i.test(path);
+    const pathLooksImage = /\/image\//.test(path) || /\/images\//.test(path);
+    const queryLooksVideo = /(?:^|[?&])(format|mime|type)=(?:video|mp4|m3u8|application%2f(?:vnd\.apple\.mpegurl|x-mpegurl))/i.test(query);
+    const queryLooksImage = /(?:^|[?&])(format|imageformat|imgtype)=(?:jpg|jpeg|png|webp|gif|avif)/i.test(query);
+
+    if (pathLooksVideo || queryLooksVideo || (hostLooksVideo && !hostLooksImage && !pathLooksImage && !queryLooksImage)) {
+      return 'video';
+    }
+    if (pathLooksImage || queryLooksImage || hostLooksImage) return 'image';
+  } catch {
+    if (hasBlockedDocumentExtension(lower)) return null;
+    if (/video/.test(lower) && !/image|img|pic|photo/.test(lower)) return 'video';
+    if (/img|image|pic|photo/.test(lower)) return 'image';
+  }
+  return null;
+}
+
+function collectElementAttributeUrls(el: Element): string[] {
+  const urls = new Set<string>();
+  const base = el.ownerDocument?.location?.href;
+  for (const name of el.getAttributeNames()) {
+    const value = el.getAttribute(name);
+    if (!value) continue;
+    const direct = tryAbsoluteUrl(value, base);
+    if (direct) urls.add(direct);
+    for (const extracted of extractUrlsFromText(value, base)) urls.add(extracted);
+  }
+  return Array.from(urls);
+}
+
+function collectXiaohongshuScriptMedia(doc: Document): Array<{ mediaUrl: string; mediaType: 'image' | 'video' }> {
+  const items: Array<{ mediaUrl: string; mediaType: 'image' | 'video' }> = [];
+  const seen = new Set<string>();
+  const push = (rawUrl: string) => {
+    const resolved = tryAbsoluteUrl(rawUrl, doc.location?.href);
+    if (!resolved) return;
+    if (!isLikelyMediaUrl(resolved, 'xiaohongshu') || isNoiseAsset(resolved, 'xiaohongshu')) return;
+    const mediaType = classifyXiaohongshuMediaUrl(resolved);
+    if (!mediaType) return;
+    const normalized = normalizeMediaUrl(resolved);
+    const key = `${mediaType}:${normalized}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push({ mediaUrl: normalized, mediaType });
+  };
+
+  const scripts = Array.from(doc.querySelectorAll<HTMLScriptElement>('script'));
+  for (const script of scripts) {
+    const text = script.textContent ?? '';
+    if (!text) continue;
+    if (!/(xhscdn|xiaohongshu|rednote|\.mp4|\.m3u8|\.jpg|\.jpeg|\.png|\.webp)/i.test(text)) continue;
+    for (const url of extractUrlsFromText(text, doc.location?.href)) push(url);
+  }
+
+  return items;
 }
 
 function isXTweetStatusHref(href: string): boolean {
@@ -625,6 +767,7 @@ function buildItemsFromCandidates(
 
   const pageOrigin = page?.origin ?? 'https://x.com';
   const sourcePageUrl = locHref;
+  const contextTags = site === 'pixiv' ? extra?.tags ?? [] : [];
 
   const items: IngestItem[] = [];
   const collectedAt = new Date().toISOString();
@@ -648,7 +791,7 @@ function buildItemsFromCandidates(
         site,
         referer,
         pageTitle,
-        tags: extra?.tags ?? [],
+        tags: contextTags,
         artworkUrl,
       },
     });
@@ -752,17 +895,37 @@ function candidateFromImage(img: HTMLImageElement, site: SiteId): MediaCandidate
 }
 
 function pickVideoUrl(video: HTMLVideoElement, site: SiteId): string | null {
-  const sources = Array.from(video.querySelectorAll<HTMLSourceElement>('source'))
+  const urls: string[] = [];
+  const push = (value?: string | null) => {
+    if (!value) return;
+    const trimmed = value.trim();
+    if (trimmed) urls.push(trimmed);
+  };
+
+  Array.from(video.querySelectorAll<HTMLSourceElement>('source'))
     .map((s) => s.src)
-    .filter(Boolean);
-  for (const src of sources) {
-    if (isLikelyMediaUrl(src, site) && !isNoiseAsset(src, site)) return src;
+    .filter(Boolean)
+    .forEach((src) => push(src));
+
+  push(video.currentSrc);
+  push(video.src);
+
+  if (site === 'xiaohongshu') {
+    collectElementAttributeUrls(video).forEach((url) => push(url));
+    let cur: Element | null = video.parentElement;
+    for (let depth = 0; cur && depth < 3; depth += 1) {
+      collectElementAttributeUrls(cur).forEach((url) => push(url));
+      cur = cur.parentElement;
+    }
   }
-  const fallback = video.currentSrc || video.src || '';
-  if (!fallback) return null;
-  if (!isLikelyMediaUrl(fallback, site)) return null;
-  if (isNoiseAsset(fallback, site)) return null;
-  return fallback;
+
+  for (const src of urls) {
+    if (!isLikelyMediaUrl(src, site) || isNoiseAsset(src, site)) continue;
+    if (site === 'xiaohongshu' && classifyXiaohongshuMediaUrl(src) !== 'video') continue;
+    return src;
+  }
+
+  return null;
 }
 
 function candidateFromVideo(video: HTMLVideoElement, site: SiteId): MediaCandidate | null {
@@ -898,12 +1061,20 @@ export function findMediaCandidates(
   }
 
   const doc = root.nodeType === 9 ? (root as Document) : root.ownerDocument;
-  if (site === 'xiaohongshu' && candidates.length === 0 && doc) {
+  if (site === 'xiaohongshu' && root.nodeType === 9 && doc) {
     for (const meta of collectXiaohongshuMetaMedia(doc)) {
       push({
         element: doc.documentElement,
         mediaUrl: normalizeMediaUrl(meta.mediaUrl),
         mediaType: meta.mediaType,
+        sourcePageUrl: doc.location?.href,
+      });
+    }
+    for (const media of collectXiaohongshuScriptMedia(doc)) {
+      push({
+        element: doc.documentElement,
+        mediaUrl: normalizeMediaUrl(media.mediaUrl),
+        mediaType: media.mediaType,
         sourcePageUrl: doc.location?.href,
       });
     }

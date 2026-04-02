@@ -93,7 +93,9 @@ export function getDefaultConfig(): ServerConfig {
       ? Math.max(1, Number(process.env.XIC_MAX_CONCURRENCY))
       : 12,
     requestTimeoutMs: process.env.XIC_TIMEOUT_MS ? Math.max(1_000, Number(process.env.XIC_TIMEOUT_MS)) : 30_000,
-    userAgent: process.env.XIC_UA ?? 'clipnest/0.1 (local-first; no-x-api; contact: none)',
+    userAgent:
+      process.env.XIC_UA ??
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
     proxyUrl,
   };
 }

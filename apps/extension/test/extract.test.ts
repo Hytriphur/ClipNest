@@ -211,6 +211,7 @@ describe('extractFromDocument', () => {
     expect(detectSite('https://www.xiaohongshu.com/explore/123456')).toBe('xiaohongshu');
     expect(detectSite('https://image.baidu.com/search/index?tn=baiduimage')).toBe('baidu');
     expect(detectSite('https://www.google.com/search?tbm=isch&q=cat')).toBe('google');
+    expect(detectSite('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBe('youtube');
   });
 
   it('extracts google image originals from imgres links', () => {
@@ -251,8 +252,8 @@ describe('extractFromDocument', () => {
     const html = `
       <html>
         <head>
-          <meta name="keywords" content="旅行,风景,胶片" />
-          <meta name="author" content="测试作者" />
+          <meta name="keywords" content="travel,landscape,film" />
+          <meta name="author" content="Tester" />
         </head>
         <body>
           <img src="https://sns-avatar-qc.xhscdn.com/avatar/abc.jpg" />
@@ -266,7 +267,112 @@ describe('extractFromDocument', () => {
     const r = extractFromDocument(dom.window.document, dom.window.location.href);
     expect(r.items.length).toBe(1);
     expect(r.items[0]?.mediaUrl).toContain('sns-webpic-qc.xhscdn.com/202401010000/abc123.jpg');
-    expect(r.items[0]?.authorHandle).toBe('测试作者');
-    expect(r.items[0]?.context?.tags).toEqual(expect.arrayContaining(['旅行', '风景', '胶片']));
+    expect(r.items[0]?.authorHandle).toBe('Tester');
+    expect(r.items[0]?.context?.tags).toEqual(expect.arrayContaining(['travel', 'landscape', 'film']));
+  });
+
+  it('extracts xiaohongshu videos from video source tags', () => {
+    const html = `
+      <html>
+        <head>
+          <meta name="author" content="VideoMaker" />
+        </head>
+        <body>
+          <div class="note-video">
+            <video controls>
+              <source src="https://fe-video-qc.xhscdn.com/stream/110/259/01e7f0aabbccddeeff00112233445566.mp4" />
+            </video>
+          </div>
+        </body>
+      </html>
+    `;
+
+    const dom = new JSDOM(html, { url: 'https://www.xiaohongshu.com/explore/66f0cafe000000001203beef' });
+    const r = extractFromDocument(dom.window.document, dom.window.location.href);
+    expect(r.items.some((item) => item.mediaType === 'video')).toBe(true);
+    expect(r.items.find((item) => item.mediaType === 'video')?.mediaUrl).toContain('fe-video-qc.xhscdn.com/stream');
+    expect(r.items.find((item) => item.mediaType === 'video')?.authorHandle).toBe('VideoMaker');
+  });
+
+  it('extracts xiaohongshu video from og meta even when images already exist', () => {
+    const html = `
+      <html>
+        <head>
+          <meta property="og:image" content="https://sns-webpic-qc.xhscdn.com/202401010000/cover.webp" />
+          <meta property="og:video" content="https://fe-video-qc.xhscdn.com/stream/110/259/abc987654321/master.m3u8" />
+          <meta name="twitter:player:stream" content="https://fe-video-qc.xhscdn.com/stream/110/259/abc987654321/fhd.mp4" />
+        </head>
+        <body>
+          <img src="https://sns-webpic-qc.xhscdn.com/202401010000/cover.webp?imageView2/2/w/1080" />
+        </body>
+      </html>
+    `;
+
+    const dom = new JSDOM(html, { url: 'https://www.xiaohongshu.com/explore/66f0cafe000000001203cafe' });
+    const r = extractFromDocument(dom.window.document, dom.window.location.href);
+    const videoItems = r.items.filter((item) => item.mediaType === 'video');
+    expect(videoItems.length).toBeGreaterThan(0);
+    expect(videoItems.some((item) => item.mediaUrl.includes('fe-video-qc.xhscdn.com'))).toBe(true);
+  });
+
+  it('extracts xiaohongshu video urls from inline script payloads', () => {
+    const html = `
+      <html>
+        <head>
+          <script>
+            window.__INITIAL_STATE__ = {
+              note: {
+                video: {
+                  masterUrl: "https:\\/\\/fe-video-qc.xhscdn.com\\/stream\\/110\\/259\\/ff0011223344\\/master.m3u8",
+                  originUrl: "https:\\/\\/fe-video-qc.xhscdn.com\\/stream\\/110\\/259\\/ff0011223344\\/fhd.mp4"
+                }
+              }
+            };
+          </script>
+        </head>
+        <body>
+          <img src="https://sns-webpic-qc.xhscdn.com/202401010000/poster.webp" />
+        </body>
+      </html>
+    `;
+
+    const dom = new JSDOM(html, { url: 'https://www.xiaohongshu.com/explore/66f0cafe000000001203d00d' });
+    const r = extractFromDocument(dom.window.document, dom.window.location.href);
+    const videoItems = r.items.filter((item) => item.mediaType === 'video');
+    expect(videoItems.length).toBeGreaterThan(0);
+    expect(videoItems.some((item) => item.mediaUrl.includes('ff0011223344'))).toBe(true);
+  });
+
+  it('ignores xiaohongshu pdf attachments even when they are on a video host', () => {
+    const html = `
+      <html>
+        <head>
+          <script>
+            window.__INITIAL_STATE__ = {
+              note: {
+                attachments: {
+                  pdfUrl: "https:\\/\\/fe-video-qc.xhscdn.com\\/docs\\/aa11bb22cc33\\/guide.pdf"
+                },
+                video: {
+                  masterUrl: "https:\\/\\/fe-video-qc.xhscdn.com\\/stream\\/110\\/259\\/aa11bb22cc33\\/master.m3u8",
+                  originUrl: "https:\\/\\/fe-video-qc.xhscdn.com\\/stream\\/110\\/259\\/aa11bb22cc33\\/fhd.mp4"
+                }
+              }
+            };
+          </script>
+        </head>
+        <body>
+          <video>
+            <source src="https://fe-video-qc.xhscdn.com/stream/110/259/aa11bb22cc33/fhd.mp4" />
+          </video>
+        </body>
+      </html>
+    `;
+
+    const dom = new JSDOM(html, { url: 'https://www.xiaohongshu.com/explore/66f0cafe000000001203face' });
+    const r = extractFromDocument(dom.window.document, dom.window.location.href);
+    const videoItems = r.items.filter((item) => item.mediaType === 'video');
+    expect(videoItems.some((item) => item.mediaUrl.includes('.pdf'))).toBe(false);
+    expect(videoItems.some((item) => item.mediaUrl.includes('aa11bb22cc33') && item.mediaUrl.includes('.mp4'))).toBe(true);
   });
 });

@@ -21,7 +21,7 @@ export type MediaRow = {
   duration_ms: number | null;
   created_at: string | null;
   saved_at: string;
-  origin: 'x' | 'pixiv' | 'duitang' | 'local' | 'other';
+  origin: 'x' | 'pixiv' | 'duitang' | 'xiaohongshu' | 'youtube' | 'baidu' | 'google' | 'local' | 'other';
   archived_at: string | null;
   deleted_at: string | null;
   deleted_from_path: string | null;

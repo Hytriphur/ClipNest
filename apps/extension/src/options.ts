@@ -13,11 +13,15 @@ async function init() {
   const s = await loadSettings();
 
   const serverUrl = $('serverUrl');
+  const launcherUrl = $('launcherUrl');
+  const launcherToken = $('launcherToken');
   const maxScrolls = $('maxScrolls');
   const stepDelayMs = $('stepDelayMs');
   const targets = $('targets');
 
   if (serverUrl) serverUrl.value = s.serverUrl ?? DEFAULT_SETTINGS.serverUrl;
+  if (launcherUrl) launcherUrl.value = s.launcherUrl ?? DEFAULT_SETTINGS.launcherUrl;
+  if (launcherToken) launcherToken.value = s.launcherToken ?? DEFAULT_SETTINGS.launcherToken;
   if (maxScrolls) maxScrolls.value = String(s.maxScrolls ?? DEFAULT_SETTINGS.maxScrolls);
   if (stepDelayMs) stepDelayMs.value = String(s.stepDelayMs ?? DEFAULT_SETTINGS.stepDelayMs);
   if (targets) targets.value = (s.targets ?? []).join('\n');
@@ -25,6 +29,8 @@ async function init() {
   document.getElementById('btnSaveSettings')?.addEventListener('click', async () => {
     const next = await loadSettings();
     next.serverUrl = serverUrl?.value?.trim() || DEFAULT_SETTINGS.serverUrl;
+    next.launcherUrl = launcherUrl?.value?.trim() || DEFAULT_SETTINGS.launcherUrl;
+    next.launcherToken = launcherToken?.value?.trim() ?? DEFAULT_SETTINGS.launcherToken;
     next.maxScrolls = Math.max(1, Number(maxScrolls?.value ?? DEFAULT_SETTINGS.maxScrolls));
     next.stepDelayMs = Math.max(250, Number(stepDelayMs?.value ?? DEFAULT_SETTINGS.stepDelayMs));
     await saveSettings(next);
@@ -39,11 +45,13 @@ async function init() {
       .filter(Boolean);
     next.targets = Array.from(new Set(lines));
     await saveSettings(next);
-    setHint(`目标已保存（${next.targets.length} 条）。`);
+    setHint(`采集目标已保存（${next.targets.length} 条）。`);
   });
 
   document.getElementById('btnOpenLibrary')?.addEventListener('click', async () => {
-    await chrome.tabs.create({ url: 'http://localhost:5173' });
+    const latest = await loadSettings();
+    const webUrl = latest.serverUrl.replace(/:\d+/, ':5173');
+    await chrome.tabs.create({ url: webUrl || 'http://localhost:5173' });
   });
 }
 

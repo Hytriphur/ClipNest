@@ -12,7 +12,7 @@ export type ExtractResult = {
   items: IngestItem[];
 };
 
-export type SiteId = 'x' | 'pixiv' | 'duitang' | 'xiaohongshu' | 'baidu' | 'google' | 'other';
+export type SiteId = 'x' | 'pixiv' | 'duitang' | 'xiaohongshu' | 'baidu' | 'google' | 'youtube' | 'other';
 
 export type IngestContext = {
   site?: SiteId;
@@ -21,6 +21,9 @@ export type IngestContext = {
   tags?: string[];
   artworkUrl?: string;
   alternateMediaUrls?: string[];
+  youtubeAudioUrl?: string;
+  youtubeAudioAltUrls?: string[];
+  youtubeQualityLabel?: string;
   clientId?: string;
   displayName?: string;
 };
